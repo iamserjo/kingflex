@@ -89,14 +89,21 @@ class PageCrawlObserver extends CrawlObserver
         // Extract links from the page
         $extractedLinks = $this->extractLinks($body, $urlString);
 
+        // Process extracted links - create page records or increment inbound link counts
+        $this->processExtractedLinks($extractedLinks, $page);
+
         // Dispatch HtmlDomReady event (for raw HTML, not JS-rendered)
         HtmlDomReady::dispatch($page, $body, false, $extractedLinks);
 
-        Log::info('Page crawled successfully', [
+        Log::info('✅ Page crawled successfully', [
             'url' => $urlString,
             'page_id' => $page->id,
             'depth' => $depth,
+            'status_code' => $statusCode,
+            'content_length' => strlen($body),
             'links_found' => count($extractedLinks),
+            'links_internal' => count(array_filter($extractedLinks, fn($link) => $this->domain->isUrlAllowed($link))),
+            'inbound_links_count' => $page->inbound_links_count,
         ]);
     }
 
@@ -127,9 +134,15 @@ class PageCrawlObserver extends CrawlObserver
         // Update inbound links count for all crawled pages
         $this->updateInboundLinksCounts();
 
-        Log::info('Finished crawling domain', [
+        $totalPages = $this->domain->pages()->count();
+        $queuedPages = $this->domain->pages()->whereNull('last_crawled_at')->count();
+        $processedPages = count($this->urlToPageId);
+
+        Log::info('🏁 Finished crawling domain', [
             'domain' => $this->domain->domain,
-            'pages_crawled' => count($this->urlToPageId),
+            'pages_crawled_this_session' => $processedPages,
+            'total_pages' => $totalPages,
+            'queued_pages' => $queuedPages,
         ]);
     }
 
@@ -320,6 +333,68 @@ class PageCrawlObserver extends CrawlObserver
             )
             WHERE domain_id = ?
         ', [$this->domain->id]);
+    }
+
+    /**
+     * Process extracted links - create page records or update inbound link counts.
+     *
+     * @param array<string> $links
+     * @param Page $sourcePage
+     */
+    private function processExtractedLinks(array $links, Page $sourcePage): void
+    {
+        foreach ($links as $link) {
+            // Only process links from this domain
+            if (!$this->domain->isUrlAllowed($link)) {
+                continue;
+            }
+
+            $linkHash = hash('sha256', $link);
+
+            // Check if page already exists
+            $existingPage = Page::where('domain_id', $this->domain->id)
+                ->where('url_hash', $linkHash)
+                ->first();
+
+            if ($existingPage) {
+                // Page exists - just create/update the link relationship
+                $this->createPageLink(
+                    \GuzzleHttp\Psr7\Utils::uriFor($sourcePage->url),
+                    $existingPage,
+                    null
+                );
+            } else {
+                // New page - create record with last_crawled_at = null (to be processed later)
+                try {
+                    $newPage = Page::create([
+                        'domain_id' => $this->domain->id,
+                        'url' => $link,
+                        'url_hash' => $linkHash,
+                        'depth' => $sourcePage->depth + 1,
+                        'last_crawled_at' => null, // Mark as unprocessed
+                    ]);
+
+                    // Create link relationship
+                    PageLink::create([
+                        'source_page_id' => $sourcePage->id,
+                        'target_page_id' => $newPage->id,
+                        'anchor_text' => null,
+                    ]);
+
+                    Log::debug('Created new page record from link', [
+                        'url' => $link,
+                        'page_id' => $newPage->id,
+                        'source_page_id' => $sourcePage->id,
+                    ]);
+                } catch (\Exception $e) {
+                    // Ignore duplicate key errors (race condition)
+                    Log::debug('Could not create page from link', [
+                        'url' => $link,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+            }
+        }
     }
 
     /**

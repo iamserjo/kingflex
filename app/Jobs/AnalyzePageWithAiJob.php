@@ -57,9 +57,11 @@ class AnalyzePageWithAiJob implements ShouldQueue
             return;
         }
 
-        Log::info('Starting AI analysis for page', [
+        Log::info('🤖 Starting AI analysis for page', [
             'page_id' => $this->page->id,
             'url' => $this->page->url,
+            'use_screenshot' => $this->useScreenshot,
+            'content_length' => strlen($this->page->raw_html ?? ''),
         ]);
 
         $systemPrompt = view('ai-prompts.analyze-page')->render();
@@ -92,9 +94,14 @@ class AnalyzePageWithAiJob implements ShouldQueue
         // Create type-specific records
         $this->createTypeSpecificRecord($result);
 
-        Log::info('AI analysis completed', [
+        Log::info('✅ AI analysis completed', [
             'page_id' => $this->page->id,
+            'url' => $this->page->url,
             'page_type' => $result['page_type'] ?? 'unknown',
+            'has_title' => !empty($result['title']),
+            'has_summary' => !empty($result['summary']),
+            'keywords_count' => count($result['keywords'] ?? []),
+            'language' => $result['language'] ?? 'unknown',
         ]);
     }
 

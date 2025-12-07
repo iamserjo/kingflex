@@ -53,9 +53,12 @@ class GeneratePageEmbeddingJob implements ShouldQueue
             return;
         }
 
-        Log::info('Generating embedding for page', [
+        Log::info('🔢 Generating embedding for page', [
             'page_id' => $this->page->id,
             'url' => $this->page->url,
+            'page_type' => $this->page->page_type,
+            'has_title' => !empty($this->page->title),
+            'has_summary' => !empty($this->page->summary),
         ]);
 
         // Prepare text for embedding
@@ -84,9 +87,11 @@ class GeneratePageEmbeddingJob implements ShouldQueue
         // Also generate embeddings for type-specific records
         $this->generateTypeSpecificEmbeddings($openRouter);
 
-        Log::info('Embedding generated successfully', [
+        Log::info('✅ Embedding generated successfully', [
             'page_id' => $this->page->id,
+            'url' => $this->page->url,
             'dimensions' => count($embedding),
+            'model' => config('openrouter.embedding_model'),
         ]);
     }
 

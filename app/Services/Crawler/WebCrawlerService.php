@@ -20,6 +20,7 @@ class WebCrawlerService
 {
     /**
      * Crawl a domain starting from its base URL.
+     * For new domains, only crawls the homepage to discover initial links.
      */
     public function crawlDomain(Domain $domain, ?int $maxPages = null): void
     {
@@ -31,26 +32,15 @@ class WebCrawlerService
             'base_url' => $baseUrl,
         ]);
 
+        // For new domains (no pages yet), only crawl the homepage to discover links
+        // Subsequent pages will be processed by crawl:update command
         $crawler = Crawler::create()
             ->setCrawlObserver($observer)
-            ->setCrawlProfile(new CrawlInternalUrls($baseUrl))
             ->setUserAgent(config('crawler.user_agent'))
-            ->setConcurrency(config('crawler.concurrency'))
-            ->setDelayBetweenRequests(config('crawler.delay_between_requests'))
             ->setMaximumResponseSize(config('crawler.max_response_size'))
-            ->setParseableMimeTypes(config('crawler.parseable_mime_types'));
-
-        // Set maximum depth if configured
-        $maxDepth = config('crawler.max_depth');
-        if ($maxDepth > 0) {
-            $crawler->setMaximumDepth($maxDepth);
-        }
-
-        // Set maximum pages limit
-        $limit = $maxPages ?? config('crawler.max_pages_per_domain');
-        if ($limit > 0) {
-            $crawler->setTotalCrawlLimit($limit);
-        }
+            ->setParseableMimeTypes(config('crawler.parseable_mime_types'))
+            ->setTotalCrawlLimit(1) // Only crawl homepage
+            ->setMaximumDepth(0); // Don't follow links automatically
 
         // Respect robots.txt if configured
         if (config('crawler.respect_robots')) {
@@ -58,6 +48,11 @@ class WebCrawlerService
         }
 
         $crawler->startCrawling($baseUrl);
+
+        Log::info('Domain homepage crawled, links extracted and queued', [
+            'domain' => $domain->domain,
+            'pages_queued' => $domain->pages()->whereNull('last_crawled_at')->count(),
+        ]);
     }
 
     /**

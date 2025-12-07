@@ -41,13 +41,19 @@ class CrawlUpdateCommand extends Command
      */
     public function handle(WebCrawlerService $crawlerService): int
     {
+        $startTime = now();
         $domainFilter = $this->option('domain');
         $limit = (int) ($this->option('limit') ?: config('crawler.max_pages_per_run'));
         $newOnly = $this->option('new-only');
         $force = $this->option('force');
 
-        $this->info('Starting crawl update...');
-        Log::info('Crawl update started', [
+        $this->logSeparator();
+        $this->info('🕷️  CRAWLER UPDATE STARTED');
+        $this->info("⏰ Time: {$startTime->format('Y-m-d H:i:s')}");
+        $this->logSeparator();
+
+        Log::info('=== CRAWL UPDATE STARTED ===', [
+            'timestamp' => $startTime->toISOString(),
             'domain_filter' => $domainFilter,
             'limit' => $limit,
             'new_only' => $newOnly,
@@ -64,41 +70,75 @@ class CrawlUpdateCommand extends Command
         $domains = $domainsQuery->get();
 
         if ($domains->isEmpty()) {
-            $this->warn('No active domains found.');
+            $this->warn('⚠️  No active domains found.');
+            Log::warning('No active domains found to crawl');
             return self::SUCCESS;
         }
 
-        $this->info("Found {$domains->count()} active domain(s).");
+        $this->info("✅ Found {$domains->count()} active domain(s)");
+        Log::info("Found {$domains->count()} active domains", [
+            'domains' => $domains->pluck('domain')->toArray(),
+        ]);
 
         $totalProcessed = 0;
+        $totalErrors = 0;
 
         foreach ($domains as $domain) {
             $this->newLine();
-            $this->info("Processing domain: {$domain->domain}");
+            $this->logSeparator('─');
+            $this->info("🌐 Processing domain: {$domain->domain}");
 
-            $processed = $this->processDomain($domain, $crawlerService, $limit - $totalProcessed, $newOnly, $force);
-            $totalProcessed += $processed;
+            $result = $this->processDomain($domain, $crawlerService, $limit - $totalProcessed, $newOnly, $force);
+            $totalProcessed += $result['processed'];
+            $totalErrors += $result['errors'];
 
-            $this->info("  Processed {$processed} pages for {$domain->domain}");
+            $this->info("  ✓ Processed: {$result['processed']} pages");
+            if ($result['errors'] > 0) {
+                $this->warn("  ⚠ Errors: {$result['errors']}");
+            }
+            $this->info("  📊 Queue size: {$result['queue_size']} pages pending");
 
             if ($totalProcessed >= $limit) {
-                $this->warn("Reached limit of {$limit} pages.");
+                $this->warn("⚠️  Reached limit of {$limit} pages.");
+                Log::info("Reached processing limit", ['limit' => $limit]);
                 break;
             }
         }
 
-        $this->newLine();
-        $this->info("Crawl update completed. Total pages processed: {$totalProcessed}");
+        $duration = $startTime->diffInSeconds(now());
 
-        Log::info('Crawl update completed', [
+        $this->newLine();
+        $this->logSeparator();
+        $this->info("✅ CRAWL UPDATE COMPLETED");
+        $this->info("📈 Total pages processed: {$totalProcessed}");
+        if ($totalErrors > 0) {
+            $this->warn("⚠️  Total errors: {$totalErrors}");
+        }
+        $this->info("⏱️  Duration: {$duration}s");
+        $this->logSeparator();
+
+        Log::info('=== CRAWL UPDATE COMPLETED ===', [
             'total_processed' => $totalProcessed,
+            'total_errors' => $totalErrors,
+            'duration_seconds' => $duration,
+            'pages_per_second' => $totalProcessed > 0 ? round($totalProcessed / max($duration, 1), 2) : 0,
         ]);
 
         return self::SUCCESS;
     }
 
     /**
+     * Print a separator line.
+     */
+    private function logSeparator(string $char = '='): void
+    {
+        $this->line(str_repeat($char, 60));
+    }
+
+    /**
      * Process a single domain.
+     *
+     * @return array{processed: int, errors: int, queue_size: int}
      */
     private function processDomain(
         Domain $domain,
@@ -106,38 +146,71 @@ class CrawlUpdateCommand extends Command
         int $limit,
         bool $newOnly,
         bool $force,
-    ): int {
+    ): array {
+        $domainStartTime = now();
+
         // Check if this is a new domain (no pages yet)
         $pageCount = $domain->pages()->count();
 
         if ($pageCount === 0) {
-            $this->info("  New domain detected, performing full crawl...");
-            return $this->crawlNewDomain($domain, $crawlerService, $limit);
+            $this->info("  🆕 New domain detected, crawling homepage...");
+            Log::info("New domain detected", ['domain' => $domain->domain]);
+
+            $result = $this->crawlNewDomain($domain, $crawlerService, $limit);
+
+            Log::info("Homepage crawled for new domain", [
+                'domain' => $domain->domain,
+                'pages_discovered' => $result['processed'],
+                'duration_seconds' => $domainStartTime->diffInSeconds(now()),
+            ]);
+
+            return $result;
         }
 
         // Get pages that need recrawling
         $pages = $this->getPagesToRecrawl($domain, $limit, $newOnly, $force);
 
         if ($pages->isEmpty()) {
-            $this->info("  No pages need updating.");
-            return 0;
+            $this->info("  ℹ️  No pages need updating.");
+            Log::debug("No pages need updating for domain", ['domain' => $domain->domain]);
+
+            return [
+                'processed' => 0,
+                'errors' => 0,
+                'queue_size' => $domain->pages()->whereNull('last_crawled_at')->count(),
+            ];
         }
 
-        $this->info("  Found {$pages->count()} pages to update.");
+        $this->info("  📋 Found {$pages->count()} pages to update");
+        Log::info("Pages queued for crawling", [
+            'domain' => $domain->domain,
+            'count' => $pages->count(),
+        ]);
 
         $processed = 0;
+        $errors = 0;
         $progressBar = $this->output->createProgressBar($pages->count());
         $progressBar->start();
 
         foreach ($pages as $page) {
             try {
+                Log::debug("Crawling page", [
+                    'page_id' => $page->id,
+                    'url' => $page->url,
+                    'inbound_links' => $page->inbound_links_count,
+                    'last_crawled' => $page->last_crawled_at?->format('Y-m-d H:i:s'),
+                ]);
+
                 $crawlerService->crawlPage($page);
                 $processed++;
+
             } catch (\Exception $e) {
+                $errors++;
                 Log::error('Failed to recrawl page', [
                     'page_id' => $page->id,
                     'url' => $page->url,
                     'error' => $e->getMessage(),
+                    'trace' => $e->getTraceAsString(),
                 ]);
             }
 
@@ -147,32 +220,61 @@ class CrawlUpdateCommand extends Command
         $progressBar->finish();
         $this->newLine();
 
-        return $processed;
+        $queueSize = $domain->pages()->whereNull('last_crawled_at')->count();
+
+        Log::info("Domain processing completed", [
+            'domain' => $domain->domain,
+            'processed' => $processed,
+            'errors' => $errors,
+            'queue_size' => $queueSize,
+            'duration_seconds' => $domainStartTime->diffInSeconds(now()),
+        ]);
+
+        return [
+            'processed' => $processed,
+            'errors' => $errors,
+            'queue_size' => $queueSize,
+        ];
     }
 
     /**
-     * Perform full crawl for a new domain.
+     * Perform homepage crawl for a new domain to discover initial links.
+     *
+     * @return array{processed: int, errors: int, queue_size: int}
      */
-    private function crawlNewDomain(Domain $domain, WebCrawlerService $crawlerService, int $limit): int
+    private function crawlNewDomain(Domain $domain, WebCrawlerService $crawlerService, int $limit): array
     {
         try {
             $crawlerService->crawlDomain($domain, $limit);
 
-            // Return the number of pages created
-            return $domain->pages()->count();
+            $pagesCount = $domain->pages()->count();
+            $queueSize = $domain->pages()->whereNull('last_crawled_at')->count();
+
+            return [
+                'processed' => 1, // Homepage was processed
+                'errors' => 0,
+                'queue_size' => $queueSize,
+            ];
         } catch (\Exception $e) {
-            Log::error('Failed to crawl new domain', [
+            Log::error('Failed to crawl new domain homepage', [
                 'domain' => $domain->domain,
                 'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
             ]);
 
-            $this->error("  Failed to crawl domain: {$e->getMessage()}");
-            return 0;
+            $this->error("  ❌ Failed to crawl domain: {$e->getMessage()}");
+
+            return [
+                'processed' => 0,
+                'errors' => 1,
+                'queue_size' => 0,
+            ];
         }
     }
 
     /**
-     * Get pages that need recrawling based on priority.
+     * Get pages that need recrawling based on priority formula.
+     * Priority = effective_age (time - popularity_bonus) DESC
      *
      * @return \Illuminate\Database\Eloquent\Collection<int, Page>
      */
@@ -182,10 +284,20 @@ class CrawlUpdateCommand extends Command
 
         if ($newOnly) {
             // Only get pages that have never been crawled
-            $query->whereNull('last_crawled_at');
+            $query->whereNull('last_crawled_at')
+                ->orderBy('created_at', 'asc'); // Oldest first
         } elseif (!$force) {
-            // Use the needsRecrawl scope
+            // Use the needsRecrawl scope (includes priority ordering)
             $query->needsRecrawl();
+        } else {
+            // Force mode: recrawl all, ordered by priority
+            $hoursPerLink = config('crawler.recrawl_priority.hours_per_link');
+            $query->orderByRaw('
+                CASE
+                    WHEN last_crawled_at IS NULL THEN 0
+                    ELSE EXTRACT(EPOCH FROM (NOW() - last_crawled_at)) / 3600 - (inbound_links_count * ?)
+                END DESC
+            ', [$hoursPerLink]);
         }
 
         return $query->limit($limit)->get();

@@ -90,29 +90,27 @@ return [
 
     /*
     |--------------------------------------------------------------------------
-    | Recrawl Intervals (in hours)
+    | Recrawl Priority Settings
     |--------------------------------------------------------------------------
     |
-    | Based on inbound_links_count, determines how often to recrawl pages
+    | Formula: effective_age = (now - last_crawled_at) - (inbound_links_count * 1 hour)
+    | Recrawl if: effective_age > max_interval_days AND time_since_crawl >= min_interval_minutes
+    |
+    | - Popular pages (many inbound links): recrawled more frequently
+    | - Minimum interval: 20 minutes (prevents excessive requests)
+    | - Maximum interval: 20 days (ensures all pages are eventually recrawled)
     |
     */
 
-    'recrawl_intervals' => [
-        // Pages with 100+ inbound links: recrawl every 1 hour
-        'high_priority' => [
-            'min_links' => 100,
-            'interval_hours' => 1,
-        ],
-        // Pages with 10-99 inbound links: recrawl every 6 hours
-        'medium_priority' => [
-            'min_links' => 10,
-            'interval_hours' => 6,
-        ],
-        // Pages with less than 10 inbound links: recrawl every 24 hours
-        'low_priority' => [
-            'min_links' => 0,
-            'interval_hours' => 24,
-        ],
+    'recrawl_priority' => [
+        // Minimum interval between recrawls (in minutes)
+        'min_interval_minutes' => env('CRAWLER_MIN_INTERVAL_MINUTES', 20),
+
+        // Maximum interval before forced recrawl (in days)
+        'max_interval_days' => env('CRAWLER_MAX_INTERVAL_DAYS', 20),
+
+        // Each inbound link reduces wait time by this many hours
+        'hours_per_link' => env('CRAWLER_HOURS_PER_LINK', 1),
     ],
 
     // Maximum pages to process per crawl:update run

@@ -35,12 +35,18 @@ class ProcessCrawledPage implements ShouldQueue
             'js_rendered' => $event->wasJsRendered,
         ]);
 
-        // If page wasn't JS-rendered, dispatch screenshot job first
-        // This will also trigger PageRendered event
-        if (!$event->wasJsRendered) {
-            TakePageScreenshotJob::dispatch($page, true)
-                ->onQueue('screenshots');
+        // Only process once - when raw HTML is first fetched (not JS-rendered)
+        // This prevents duplicate processing when renderPageWithJs dispatches HtmlDomReady again
+        if ($event->wasJsRendered) {
+            Log::debug('Skipping processing - page already processed with raw HTML', [
+                'page_id' => $page->id,
+            ]);
+            return;
         }
+
+        // Dispatch screenshot job (will render with JS and take screenshot)
+        TakePageScreenshotJob::dispatch($page, true)
+            ->onQueue('screenshots');
 
         // Dispatch AI analysis job (will run after screenshot is taken)
         AnalyzePageWithAiJob::dispatch($page, true)

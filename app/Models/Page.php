@@ -193,61 +193,55 @@ class Page extends Model
     }
 
     /**
-     * Scope to get pages that need recrawling based on priority.
+     * Scope to get pages that need recrawling based on priority formula.
+     *
+     * Formula: effective_age = (now - last_crawled_at) - (inbound_links_count * hours_per_link)
+     * Recrawl if: effective_age > max_interval_days AND time_since_crawl >= min_interval_minutes
      *
      * @param \Illuminate\Database\Eloquent\Builder<Page> $query
      * @return \Illuminate\Database\Eloquent\Builder<Page>
      */
     public function scopeNeedsRecrawl($query)
     {
-        $intervals = config('crawler.recrawl_intervals');
+        $minIntervalMinutes = config('crawler.recrawl_priority.min_interval_minutes');
+        $maxIntervalDays = config('crawler.recrawl_priority.max_interval_days');
+        $hoursPerLink = config('crawler.recrawl_priority.hours_per_link');
 
-        return $query->where(function ($q) use ($intervals) {
-            // Never crawled pages first
+        $minIntervalTimestamp = now()->subMinutes($minIntervalMinutes);
+        $maxIntervalHours = $maxIntervalDays * 24;
+
+        return $query->where(function ($q) use ($minIntervalTimestamp, $maxIntervalHours, $hoursPerLink) {
+            // Never crawled pages (highest priority)
             $q->whereNull('last_crawled_at')
-                // High priority: 100+ links, 1 hour interval
-                ->orWhere(function ($q) use ($intervals) {
-                    $q->where('inbound_links_count', '>=', $intervals['high_priority']['min_links'])
-                        ->where('last_crawled_at', '<', now()->subHours($intervals['high_priority']['interval_hours']));
-                })
-                // Medium priority: 10-99 links, 6 hour interval
-                ->orWhere(function ($q) use ($intervals) {
-                    $q->where('inbound_links_count', '>=', $intervals['medium_priority']['min_links'])
-                        ->where('inbound_links_count', '<', $intervals['high_priority']['min_links'])
-                        ->where('last_crawled_at', '<', now()->subHours($intervals['medium_priority']['interval_hours']));
-                })
-                // Low priority: <10 links, 24 hour interval
-                ->orWhere(function ($q) use ($intervals) {
-                    $q->where('inbound_links_count', '<', $intervals['medium_priority']['min_links'])
-                        ->where('last_crawled_at', '<', now()->subHours($intervals['low_priority']['interval_hours']));
-                });
+                // Pages that meet the recrawl criteria
+                ->orWhereRaw(
+                    "EXTRACT(EPOCH FROM (NOW() - last_crawled_at)) / 3600 - (inbound_links_count * ?) > ? 
+                     AND last_crawled_at < ?",
+                    [$hoursPerLink, $maxIntervalHours, $minIntervalTimestamp]
+                );
         })->orderByRaw('
             CASE
                 WHEN last_crawled_at IS NULL THEN 0
-                WHEN inbound_links_count >= ? THEN 1
-                WHEN inbound_links_count >= ? THEN 2
-                ELSE 3
-            END,
-            last_crawled_at ASC NULLS FIRST
-        ', [$intervals['high_priority']['min_links'], $intervals['medium_priority']['min_links']]);
+                ELSE EXTRACT(EPOCH FROM (NOW() - last_crawled_at)) / 3600 - (inbound_links_count * ?)
+            END DESC
+        ', [$hoursPerLink]);
     }
 
     /**
-     * Calculate the recrawl interval for this page in hours.
+     * Calculate the effective age of this page in hours.
+     * Takes into account the popularity bonus from inbound links.
      */
-    public function getRecrawlIntervalHours(): int
+    public function getEffectiveAgeHours(): float
     {
-        $intervals = config('crawler.recrawl_intervals');
-
-        if ($this->inbound_links_count >= $intervals['high_priority']['min_links']) {
-            return $intervals['high_priority']['interval_hours'];
+        if ($this->last_crawled_at === null) {
+            return PHP_FLOAT_MAX;
         }
 
-        if ($this->inbound_links_count >= $intervals['medium_priority']['min_links']) {
-            return $intervals['medium_priority']['interval_hours'];
-        }
+        $hoursPerLink = config('crawler.recrawl_priority.hours_per_link');
+        $timeSinceCrawl = now()->diffInHours($this->last_crawled_at);
+        $popularityBonus = $this->inbound_links_count * $hoursPerLink;
 
-        return $intervals['low_priority']['interval_hours'];
+        return $timeSinceCrawl - $popularityBonus;
     }
 
     /**
@@ -255,13 +249,46 @@ class Page extends Model
      */
     public function needsRecrawl(): bool
     {
+        // Never crawled - always needs crawl
         if ($this->last_crawled_at === null) {
             return true;
         }
 
-        $intervalHours = $this->getRecrawlIntervalHours();
+        $minIntervalMinutes = config('crawler.recrawl_priority.min_interval_minutes');
+        $maxIntervalDays = config('crawler.recrawl_priority.max_interval_days');
 
-        return $this->last_crawled_at->addHours($intervalHours)->isPast();
+        // Check minimum interval (prevent too frequent crawls)
+        if ($this->last_crawled_at->addMinutes($minIntervalMinutes)->isFuture()) {
+            return false;
+        }
+
+        // Check if effective age exceeds maximum interval
+        $effectiveAgeHours = $this->getEffectiveAgeHours();
+        $maxIntervalHours = $maxIntervalDays * 24;
+
+        return $effectiveAgeHours > $maxIntervalHours;
+    }
+
+    /**
+     * Get the next scheduled crawl time for this page.
+     */
+    public function getNextCrawlTime(): ?\Carbon\Carbon
+    {
+        if ($this->last_crawled_at === null) {
+            return now(); // Crawl ASAP
+        }
+
+        $maxIntervalDays = config('crawler.recrawl_priority.max_interval_days');
+        $hoursPerLink = config('crawler.recrawl_priority.hours_per_link');
+
+        $popularityBonus = $this->inbound_links_count * $hoursPerLink;
+        $adjustedIntervalHours = ($maxIntervalDays * 24) - $popularityBonus;
+
+        // Ensure we don't go below minimum interval
+        $minIntervalMinutes = config('crawler.recrawl_priority.min_interval_minutes');
+        $adjustedIntervalHours = max($adjustedIntervalHours, $minIntervalMinutes / 60);
+
+        return $this->last_crawled_at->addHours($adjustedIntervalHours);
     }
 
     /**

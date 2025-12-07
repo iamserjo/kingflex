@@ -51,10 +51,11 @@ class TakePageScreenshotJob implements ShouldQueue
      */
     public function handle(WebCrawlerService $crawlerService): void
     {
-        Log::info('Taking screenshot for page', [
+        Log::info('📸 Taking screenshot for page', [
             'page_id' => $this->page->id,
             'url' => $this->page->url,
             'render_with_js' => $this->renderWithJs,
+            'format' => config('crawler.screenshot_format'),
         ]);
 
         try {
@@ -66,8 +67,10 @@ class TakePageScreenshotJob implements ShouldQueue
                 $crawlerService->takeScreenshot($this->page);
             }
 
-            Log::info('Screenshot taken successfully', [
+            Log::info('✅ Screenshot taken successfully', [
                 'page_id' => $this->page->id,
+                'url' => $this->page->url,
+                'render_with_js' => $this->renderWithJs,
             ]);
         } catch (\Exception $e) {
             Log::error('Failed to take screenshot', [
