@@ -153,6 +153,26 @@ class Page extends Model
     }
 
     /**
+     * Get content tags for this page (what the page is about).
+     *
+     * @return HasMany<PageContentTag, $this>
+     */
+    public function contentTags(): HasMany
+    {
+        return $this->hasMany(PageContentTag::class)->orderByDesc('weight');
+    }
+
+    /**
+     * Get search tags for this page (how users might search for it).
+     *
+     * @return HasMany<PageSearchTag, $this>
+     */
+    public function searchTags(): HasMany
+    {
+        return $this->hasMany(PageSearchTag::class)->orderByDesc('weight');
+    }
+
+    /**
      * Get the product data if this is a product page.
      *
      * @return HasOne<Product, $this>
