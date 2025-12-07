@@ -6,6 +6,7 @@ namespace App\Jobs;
 
 use App\Models\Page;
 use App\Models\PageSearchTag;
+use App\Services\Html\HtmlSanitizerService;
 use App\Services\OpenRouter\OpenRouterService;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -46,7 +47,7 @@ class ExtractSearchTagsJob implements ShouldQueue
     /**
      * Execute the job.
      */
-    public function handle(OpenRouterService $openRouter): void
+    public function handle(OpenRouterService $openRouter, HtmlSanitizerService $sanitizer): void
     {
         if (!$openRouter->isConfigured()) {
             Log::warning('OpenRouter not configured, skipping search tags extraction', [
@@ -61,7 +62,7 @@ class ExtractSearchTagsJob implements ShouldQueue
         ]);
 
         $systemPrompt = view('ai-prompts.extract-search-tags')->render();
-        $content = $this->prepareContent();
+        $content = $this->prepareContent($sanitizer);
 
         if (empty($content)) {
             Log::warning('No content available for search tag extraction', [
@@ -89,15 +90,16 @@ class ExtractSearchTagsJob implements ShouldQueue
 
     /**
      * Prepare content for AI analysis.
+     * Uses already analyzed page data plus sanitized HTML.
      */
-    private function prepareContent(): string
+    private function prepareContent(HtmlSanitizerService $sanitizer): string
     {
         $parts = [];
 
         // Add URL
         $parts[] = "URL: {$this->page->url}";
 
-        // Add title if available
+        // Add title if available (from previous AI analysis)
         if (!empty($this->page->title)) {
             $parts[] = "Title: {$this->page->title}";
         }
@@ -112,18 +114,11 @@ class ExtractSearchTagsJob implements ShouldQueue
             $parts[] = "Page Type: {$this->page->page_type}";
         }
 
-        // Add raw HTML (limited)
-        $html = $this->page->raw_html;
-        if (!empty($html)) {
-            $html = preg_replace('/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/is', '', $html);
-            $html = preg_replace('/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/is', '', $html);
-
-            $maxLength = 20000;
-            if (strlen($html) > $maxLength) {
-                $html = substr($html, 0, $maxLength) . '... [truncated]';
-            }
-
-            $parts[] = "\nHTML:\n{$html}";
+        // Add sanitized HTML
+        if (!empty($this->page->raw_html)) {
+            $result = $sanitizer->sanitize($this->page->raw_html, 20000);
+            $parts[] = "\n=== HTML CONTENT ===";
+            $parts[] = $result['html'];
         }
 
         return implode("\n", $parts);

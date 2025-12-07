@@ -6,6 +6,7 @@ namespace App\Jobs;
 
 use App\Models\Page;
 use App\Models\PageContentTag;
+use App\Services\Html\HtmlSanitizerService;
 use App\Services\OpenRouter\OpenRouterService;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -46,7 +47,7 @@ class ExtractContentTagsJob implements ShouldQueue
     /**
      * Execute the job.
      */
-    public function handle(OpenRouterService $openRouter): void
+    public function handle(OpenRouterService $openRouter, HtmlSanitizerService $sanitizer): void
     {
         if (!$openRouter->isConfigured()) {
             Log::warning('OpenRouter not configured, skipping content tags extraction', [
@@ -61,7 +62,7 @@ class ExtractContentTagsJob implements ShouldQueue
         ]);
 
         $systemPrompt = view('ai-prompts.extract-content-tags')->render();
-        $content = $this->prepareContent();
+        $content = $sanitizer->getForAi($this->page->raw_html ?? '', $this->page->url, 30000);
 
         if (empty($content)) {
             Log::warning('No content available for tag extraction', [
@@ -85,30 +86,6 @@ class ExtractContentTagsJob implements ShouldQueue
             'page_id' => $this->page->id,
             'tags_count' => count($result['tags']),
         ]);
-    }
-
-    /**
-     * Prepare content for AI analysis.
-     */
-    private function prepareContent(): string
-    {
-        $html = $this->page->raw_html;
-
-        if (empty($html)) {
-            return '';
-        }
-
-        // Strip scripts and styles
-        $html = preg_replace('/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/is', '', $html);
-        $html = preg_replace('/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/is', '', $html);
-
-        // Limit content length
-        $maxLength = 30000;
-        if (strlen($html) > $maxLength) {
-            $html = substr($html, 0, $maxLength) . '... [truncated]';
-        }
-
-        return "URL: {$this->page->url}\n\nHTML:\n{$html}";
     }
 
     /**

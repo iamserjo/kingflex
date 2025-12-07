@@ -9,6 +9,7 @@ use App\Models\Category;
 use App\Models\Contact;
 use App\Models\Page;
 use App\Models\Product;
+use App\Services\Html\HtmlSanitizerService;
 use App\Services\OpenRouter\OpenRouterService;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -48,7 +49,7 @@ class AnalyzePageWithAiJob implements ShouldQueue
     /**
      * Execute the job.
      */
-    public function handle(OpenRouterService $openRouter): void
+    public function handle(OpenRouterService $openRouter, HtmlSanitizerService $sanitizer): void
     {
         if (!$openRouter->isConfigured()) {
             Log::warning('OpenRouter is not configured, skipping AI analysis', [
@@ -66,8 +67,8 @@ class AnalyzePageWithAiJob implements ShouldQueue
 
         $systemPrompt = view('ai-prompts.analyze-page')->render();
 
-        // Prepare content for analysis
-        $content = $this->prepareContent();
+        // Prepare content for analysis using sanitizer
+        $content = $this->prepareContent($sanitizer);
 
         if (empty($content)) {
             Log::warning('No content available for analysis', [
@@ -108,7 +109,7 @@ class AnalyzePageWithAiJob implements ShouldQueue
     /**
      * Prepare content for AI analysis.
      */
-    private function prepareContent(): string
+    private function prepareContent(HtmlSanitizerService $sanitizer): string
     {
         $html = $this->page->raw_html;
 
@@ -116,17 +117,8 @@ class AnalyzePageWithAiJob implements ShouldQueue
             return '';
         }
 
-        // Strip scripts and styles to reduce token usage
-        $html = preg_replace('/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/is', '', $html);
-        $html = preg_replace('/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/is', '', $html);
-
-        // Limit content length to avoid token limits
-        $maxLength = 50000; // ~12k tokens
-        if (strlen($html) > $maxLength) {
-            $html = substr($html, 0, $maxLength) . '... [truncated]';
-        }
-
-        return "URL: {$this->page->url}\n\nHTML Content:\n{$html}";
+        // Use sanitizer to clean HTML and extract metadata
+        return $sanitizer->getForAi($html, $this->page->url, 50000);
     }
 
     /**
