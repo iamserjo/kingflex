@@ -203,9 +203,9 @@ class Page extends Model
      */
     public function scopeNeedsRecrawl($query)
     {
-        $minIntervalMinutes = config('crawler.recrawl_priority.min_interval_minutes');
-        $maxIntervalDays = config('crawler.recrawl_priority.max_interval_days');
-        $hoursPerLink = config('crawler.recrawl_priority.hours_per_link');
+        $minIntervalMinutes = (int) config('crawler.recrawl_priority.min_interval_minutes');
+        $maxIntervalDays = (int) config('crawler.recrawl_priority.max_interval_days');
+        $hoursPerLink = (int) config('crawler.recrawl_priority.hours_per_link');
 
         $minIntervalTimestamp = now()->subMinutes($minIntervalMinutes);
         $maxIntervalHours = $maxIntervalDays * 24;
@@ -237,11 +237,11 @@ class Page extends Model
             return PHP_FLOAT_MAX;
         }
 
-        $hoursPerLink = config('crawler.recrawl_priority.hours_per_link');
+        $hoursPerLink = (int) config('crawler.recrawl_priority.hours_per_link');
         $timeSinceCrawl = now()->diffInHours($this->last_crawled_at);
         $popularityBonus = $this->inbound_links_count * $hoursPerLink;
 
-        return $timeSinceCrawl - $popularityBonus;
+        return (float) ($timeSinceCrawl - $popularityBonus);
     }
 
     /**
@@ -254,11 +254,11 @@ class Page extends Model
             return true;
         }
 
-        $minIntervalMinutes = config('crawler.recrawl_priority.min_interval_minutes');
-        $maxIntervalDays = config('crawler.recrawl_priority.max_interval_days');
+        $minIntervalMinutes = (int) config('crawler.recrawl_priority.min_interval_minutes');
+        $maxIntervalDays = (int) config('crawler.recrawl_priority.max_interval_days');
 
         // Check minimum interval (prevent too frequent crawls)
-        if ($this->last_crawled_at->addMinutes($minIntervalMinutes)->isFuture()) {
+        if ($this->last_crawled_at->copy()->addMinutes($minIntervalMinutes)->isFuture()) {
             return false;
         }
 
@@ -278,17 +278,17 @@ class Page extends Model
             return now(); // Crawl ASAP
         }
 
-        $maxIntervalDays = config('crawler.recrawl_priority.max_interval_days');
-        $hoursPerLink = config('crawler.recrawl_priority.hours_per_link');
+        $maxIntervalDays = (int) config('crawler.recrawl_priority.max_interval_days');
+        $hoursPerLink = (int) config('crawler.recrawl_priority.hours_per_link');
 
         $popularityBonus = $this->inbound_links_count * $hoursPerLink;
         $adjustedIntervalHours = ($maxIntervalDays * 24) - $popularityBonus;
 
         // Ensure we don't go below minimum interval
-        $minIntervalMinutes = config('crawler.recrawl_priority.min_interval_minutes');
-        $adjustedIntervalHours = max($adjustedIntervalHours, $minIntervalMinutes / 60);
+        $minIntervalMinutes = (int) config('crawler.recrawl_priority.min_interval_minutes');
+        $adjustedIntervalHours = (float) max($adjustedIntervalHours, $minIntervalMinutes / 60);
 
-        return $this->last_crawled_at->addHours($adjustedIntervalHours);
+        return $this->last_crawled_at->copy()->addHours($adjustedIntervalHours);
     }
 
     /**
