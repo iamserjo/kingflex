@@ -51,12 +51,12 @@ class ProcessCrawledPage implements ShouldQueue
         // Dispatch AI analysis job (will run after screenshot is taken)
         AnalyzePageWithAiJob::dispatch($page, true)
             ->onQueue('ai-analysis')
-            ->delay(now()->addSeconds(5)); // Small delay to allow screenshot to complete
+            ->delay(5); // 5 seconds delay to allow screenshot to complete
 
         // Dispatch embedding generation job (will run after AI analysis)
         GeneratePageEmbeddingJob::dispatch($page)
             ->onQueue('embeddings')
-            ->delay(now()->addSeconds(30)); // Delay to allow AI analysis to complete
+            ->delay(30); // 30 seconds delay to allow AI analysis to complete
     }
 
     /**

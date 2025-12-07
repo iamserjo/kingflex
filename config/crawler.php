@@ -104,17 +104,17 @@ return [
 
     'recrawl_priority' => [
         // Minimum interval between recrawls (in minutes)
-        'min_interval_minutes' => env('CRAWLER_MIN_INTERVAL_MINUTES', 20),
+        'min_interval_minutes' => (int) env('CRAWLER_MIN_INTERVAL_MINUTES', 20),
 
         // Maximum interval before forced recrawl (in days)
-        'max_interval_days' => env('CRAWLER_MAX_INTERVAL_DAYS', 20),
+        'max_interval_days' => (int) env('CRAWLER_MAX_INTERVAL_DAYS', 20),
 
         // Each inbound link reduces wait time by this many hours
-        'hours_per_link' => env('CRAWLER_HOURS_PER_LINK', 1),
+        'hours_per_link' => (int) env('CRAWLER_HOURS_PER_LINK', 1),
     ],
 
     // Maximum pages to process per crawl:update run
-    'max_pages_per_run' => env('CRAWLER_MAX_PAGES_PER_RUN', 100),
+    'max_pages_per_run' => (int) env('CRAWLER_MAX_PAGES_PER_RUN', 100),
 
 ];
 
