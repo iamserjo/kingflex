@@ -1,0 +1,47 @@
+#Development Guidelines:
+  - Use PHP 8.4+ features where appropriate
+  - Follow Laravel conventions and best practices (laravel 12 with react + pest 4)
+  - Focus on creating code that provides excellent developer experience (DX), better autocompletion, type safety, and comprehensive docblocks
+
+#Coding Standards and Conventions:
+  - Class and Enum names: Use PascalCase (e.g., MyClass)
+  - Method names: Use camelCase (e.g., myMethod)
+  - Constants and Enum Cases names: Use SCREAMING_SNAKE_CASE (e.g., MY_CONSTANT)
+  - use events and listeners for business logic, create jobs for heavy tasks
+  - we should try to keep code as independent parts so we can test it easily, like jobs, commands, events, listeners, services
+
+# LOOK UP DATABASE RECORDS
+if you need to find records in db: e.g. users id 1,2,3,4,5 run docker-compose exec laravel.test php artisan tinker --execute="print_r(DB::select('SELECT * FROM users WHERE id IN (?, ?, ?, ?, ?)', [1,2,3,4,5]));"
+if you want to see mysql structure of a table, you can run, e.g. show create table users: docker-compose exec  laravel.test php artisan tinker --execute="print_r(DB::select('SHOW CREATE TABLE users'));"
+if you need to run any query to see records in db run: docker-compose exec  laravel.test php artisan tinker --execute="print_r(DB::select('Your query with param = ?', [1]));" - params are optional
+
+we do not need to create markdown files like .md or text or other docs if i do not ask you directly to do so.(!!IMPORTANT!!)
+
+run php artisan commands or create/run migrations using docker-compose exec laravel.test php artisan ...
+You can run commands php artisan via docker-compose exec laravel.test php artisan ...
+
+TESTS - if you changed code/tests you should run tests to make sure everything is ok.
+tests can be executed by docker-compose exec laravel.test ./vendor/bin/pest
+
+REBUILD CODE - if you need full rebuild npm + php clear cache + migrate + composer install
+docker-compose exec laravel.test ./upd.sh
+
+REBUILD NPM - if you change html/css/js/react files
+docker-compose exec laravel.test npm install && npm run build
+
+When you run laravel commands add to command -d max_execution_time=30
+
+we have null coalescing operator in php 8.4+ and you can use it like this: $var ?? 'default value' or you can use $var?->method();
+
+#BROWSER TESTING - use @Browser when you need to test page
+APP_ENV in .env (NEVER USE http://localhost !!!) - https://laravel.test.marketking.orb.local this is host of local project so you can use this host for testing - it is pointed to local docker
+
+When you write a prompt for ai store it in blade file in folder resources/views/ai-prompts
+
+look at app/Providers/AppServiceProvider.php to understand project better
+
+use best practises of laravel and devops when you write code so it is easy to maintain and extend the code
+
+do not create .md files unless i ask you to do so. (!!IMPORTANT!!)
+
+all prompts should be stored resources/views/ai-prompts so we can render them via view('ai-prompts.name')->render();
