@@ -62,17 +62,31 @@ class OpenRouterService
      */
     public function chat(array $messages, array $options = []): ?array
     {
+        $model = $options['model'] ?? $this->chatModel;
+
+        Log::debug('📤 Sending request to OpenRouter', [
+            'url' => $this->baseUrl . '/chat/completions',
+            'model' => $model,
+            'has_api_key' => !empty($this->apiKey),
+        ]);
+
         try {
-            $response = $this->client()->post('/chat/completions', [
-                'model' => $options['model'] ?? $this->chatModel,
+            $requestBody = [
+                'model' => $model,
                 'messages' => $messages,
                 'max_tokens' => $options['max_tokens'] ?? $this->chatMaxTokens,
                 'temperature' => $options['temperature'] ?? $this->chatTemperature,
-                'response_format' => $options['response_format'] ?? null,
-            ]);
+            ];
+
+            // Only add response_format if specified
+            if (!empty($options['response_format'])) {
+                $requestBody['response_format'] = $options['response_format'];
+            }
+
+            $response = $this->client()->post('/chat/completions', $requestBody);
 
             if (!$response->successful()) {
-                Log::error('OpenRouter chat request failed', [
+                Log::error('❌ OpenRouter API error', [
                     'status' => $response->status(),
                     'body' => $response->body(),
                 ]);
@@ -81,13 +95,18 @@ class OpenRouterService
 
             $data = $response->json();
 
+            Log::debug('📥 OpenRouter response received', [
+                'model' => $data['model'] ?? 'unknown',
+                'usage' => $data['usage'] ?? [],
+            ]);
+
             return [
                 'content' => $data['choices'][0]['message']['content'] ?? '',
                 'usage' => $data['usage'] ?? [],
-                'model' => $data['model'] ?? $this->chatModel,
+                'model' => $data['model'] ?? $model,
             ];
         } catch (\Exception $e) {
-            Log::error('OpenRouter chat request exception', [
+            Log::error('❌ OpenRouter exception', [
                 'message' => $e->getMessage(),
                 'trace' => $e->getTraceAsString(),
             ]);
@@ -105,6 +124,12 @@ class OpenRouterService
      */
     public function chatJson(string $systemPrompt, string $userMessage, array $options = []): ?array
     {
+        Log::info('🤖 OpenRouter chatJson request', [
+            'model' => $options['model'] ?? $this->chatModel,
+            'system_prompt_length' => strlen($systemPrompt),
+            'user_message_length' => strlen($userMessage),
+        ]);
+
         $messages = [
             ['role' => 'system', 'content' => $systemPrompt],
             ['role' => 'user', 'content' => $userMessage],
@@ -115,14 +140,28 @@ class OpenRouterService
         $response = $this->chat($messages, $options);
 
         if ($response === null) {
+            Log::error('❌ OpenRouter chatJson failed - no response');
             return null;
         }
 
+        Log::debug('📨 OpenRouter raw response', [
+            'content_length' => strlen($response['content']),
+            'usage' => $response['usage'] ?? [],
+        ]);
+
         try {
-            return json_decode($response['content'], true, 512, JSON_THROW_ON_ERROR);
+            $parsed = json_decode($response['content'], true, 512, JSON_THROW_ON_ERROR);
+
+            Log::info('✅ OpenRouter chatJson success', [
+                'page_type' => $parsed['page_type'] ?? 'unknown',
+                'has_title' => !empty($parsed['title']),
+                'has_summary' => !empty($parsed['summary']),
+            ]);
+
+            return $parsed;
         } catch (\JsonException $e) {
-            Log::error('Failed to parse OpenRouter JSON response', [
-                'content' => $response['content'],
+            Log::error('❌ Failed to parse OpenRouter JSON response', [
+                'content' => substr($response['content'], 0, 500),
                 'error' => $e->getMessage(),
             ]);
             return null;

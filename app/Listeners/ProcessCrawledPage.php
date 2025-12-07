@@ -7,12 +7,11 @@ namespace App\Listeners;
 use App\Events\HtmlDomReady;
 use App\Jobs\AnalyzePageWithAiJob;
 use App\Jobs\GeneratePageEmbeddingJob;
-use App\Jobs\TakePageScreenshotJob;
 use Illuminate\Support\Facades\Log;
 
 /**
  * Listener that processes crawled pages when DOM is ready.
- * Runs synchronously to take screenshots and queue AI analysis.
+ * Runs AI analysis synchronously to analyze raw HTML content.
  */
 class ProcessCrawledPage
 {
@@ -27,6 +26,7 @@ class ProcessCrawledPage
             'page_id' => $page->id,
             'url' => $page->url,
             'js_rendered' => $event->wasJsRendered,
+            'html_length' => strlen($event->html),
         ]);
 
         // Skip if already JS-rendered (to avoid double processing)
@@ -35,27 +35,30 @@ class ProcessCrawledPage
             return;
         }
 
-        // Queue screenshot job (requires Puppeteer to be installed)
-        $screenshotsEnabled = config('crawler.screenshots_enabled', false);
-        if ($screenshotsEnabled) {
-            Log::info('📸 Queueing screenshot job...', ['page_id' => $page->id]);
-            TakePageScreenshotJob::dispatch($page, true)->onQueue('screenshots');
-        } else {
-            Log::debug('📸 Screenshots disabled in config', ['page_id' => $page->id]);
+        // Run AI analysis synchronously (send raw HTML to AI)
+        try {
+            Log::info('🤖 Starting AI analysis...', [
+                'page_id' => $page->id,
+                'url' => $page->url,
+            ]);
+
+            AnalyzePageWithAiJob::dispatchSync($page, false); // false = no screenshot
+
+            Log::info('✅ AI analysis completed', ['page_id' => $page->id]);
+        } catch (\Exception $e) {
+            Log::error('❌ AI analysis failed', [
+                'page_id' => $page->id,
+                'error' => $e->getMessage(),
+            ]);
         }
 
-        // Queue AI analysis job (without screenshot if disabled)
-        AnalyzePageWithAiJob::dispatch($page, $screenshotsEnabled)
-            ->onQueue('ai-analysis');
-
-        // Queue embedding generation job
+        // Queue embedding generation (can be async)
         GeneratePageEmbeddingJob::dispatch($page)
             ->onQueue('embeddings');
 
         Log::info('✅ Page processing completed', [
             'page_id' => $page->id,
-            'screenshot_queued' => $screenshotsEnabled,
-            'ai_analysis_queued' => true,
+            'ai_analyzed' => true,
             'embedding_queued' => true,
         ]);
     }
