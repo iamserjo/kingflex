@@ -47,6 +47,9 @@ return [
     |--------------------------------------------------------------------------
     */
 
+    // Enable/disable screenshot capture (requires Puppeteer: npm install puppeteer)
+    'screenshots_enabled' => env('CRAWLER_SCREENSHOTS_ENABLED', false),
+
     // Path to store screenshots (relative to storage/app)
     'screenshots_path' => env('CRAWLER_SCREENSHOTS_PATH', 'screenshots'),
 

@@ -129,9 +129,12 @@ class WebCrawlerService
      */
     public function takeScreenshot(Page $page): ?string
     {
-        try {
-            $browsershot = $this->createBrowsershot($page->url);
+        Log::info('📸 Starting screenshot capture', [
+            'page_id' => $page->id,
+            'url' => $page->url,
+        ]);
 
+        try {
             // Configure screenshot settings
             $format = config('crawler.screenshot_format', 'png');
             $quality = config('crawler.screenshot_quality', 90);
@@ -151,8 +154,12 @@ class WebCrawlerService
             // Ensure directory exists
             $directory = dirname($fullPath);
             if (!is_dir($directory)) {
+                Log::debug('Creating screenshot directory', ['path' => $directory]);
                 mkdir($directory, 0755, true);
             }
+
+            Log::debug('Creating Browsershot instance', ['url' => $page->url]);
+            $browsershot = $this->createBrowsershot($page->url);
 
             // Take screenshot
             if ($fullPage) {
@@ -163,7 +170,14 @@ class WebCrawlerService
                 $browsershot->setScreenshotType('jpeg', $quality);
             }
 
+            Log::debug('Saving screenshot', ['path' => $fullPath]);
             $browsershot->save($fullPath);
+
+            // Verify file was created
+            if (!file_exists($fullPath)) {
+                Log::error('Screenshot file was not created', ['path' => $fullPath]);
+                return null;
+            }
 
             // Get image dimensions
             $imageInfo = @getimagesize($fullPath);
@@ -171,8 +185,14 @@ class WebCrawlerService
             $height = $imageInfo[1] ?? null;
             $fileSize = @filesize($fullPath);
 
+            Log::debug('Screenshot file info', [
+                'width' => $width,
+                'height' => $height,
+                'file_size' => $fileSize,
+            ]);
+
             // Create screenshot record
-            $page->screenshots()->create([
+            $screenshot = $page->screenshots()->create([
                 'path' => $filename,
                 'format' => $format,
                 'width' => $width,
@@ -180,16 +200,20 @@ class WebCrawlerService
                 'file_size' => $fileSize ?: null,
             ]);
 
-            Log::info('Screenshot taken', [
+            Log::info('✅ Screenshot saved successfully', [
                 'page_id' => $page->id,
+                'screenshot_id' => $screenshot->id,
                 'path' => $filename,
+                'size' => $fileSize,
             ]);
 
             return $filename;
         } catch (\Exception $e) {
-            Log::error('Failed to take screenshot', [
+            Log::error('❌ Failed to take screenshot', [
+                'page_id' => $page->id,
                 'url' => $page->url,
                 'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
             ]);
             return null;
         }
@@ -200,6 +224,19 @@ class WebCrawlerService
      */
     private function createBrowsershot(string $url): Browsershot
     {
+        $chromePath = config('crawler.chrome_path');
+        $nodePath = config('crawler.node_path');
+        $npmPath = config('crawler.npm_path');
+
+        Log::debug('🔧 Creating Browsershot instance', [
+            'url' => $url,
+            'chrome_path' => $chromePath ?: 'auto-detect',
+            'node_path' => $nodePath ?: 'auto-detect',
+            'npm_path' => $npmPath ?: 'auto-detect',
+            'viewport' => config('crawler.viewport_width') . 'x' . config('crawler.viewport_height'),
+            'timeout' => config('crawler.timeout') . 's',
+        ]);
+
         $browsershot = Browsershot::url($url)
             ->setOption('args', config('crawler.puppeteer_args'))
             ->waitUntilNetworkIdle()
@@ -210,7 +247,6 @@ class WebCrawlerService
             ->timeout(config('crawler.timeout') * 1000); // Convert to milliseconds
 
         // Set custom Chrome path if configured
-        $chromePath = config('crawler.chrome_path');
         if ($chromePath) {
             $browsershot->setChromePath($chromePath);
         }

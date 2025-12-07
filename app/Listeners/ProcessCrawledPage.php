@@ -8,20 +8,14 @@ use App\Events\HtmlDomReady;
 use App\Jobs\AnalyzePageWithAiJob;
 use App\Jobs\GeneratePageEmbeddingJob;
 use App\Jobs\TakePageScreenshotJob;
-use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Support\Facades\Log;
 
 /**
  * Listener that processes crawled pages when DOM is ready.
- * Dispatches AI analysis, screenshot, and embedding jobs.
+ * Runs synchronously to take screenshots and queue AI analysis.
  */
-class ProcessCrawledPage implements ShouldQueue
+class ProcessCrawledPage
 {
-    /**
-     * The name of the queue the job should be sent to.
-     */
-    public string $queue = 'crawling';
-
     /**
      * Handle the event.
      */
@@ -29,44 +23,40 @@ class ProcessCrawledPage implements ShouldQueue
     {
         $page = $event->page;
 
-        Log::info('Processing crawled page', [
+        Log::info('📋 Processing crawled page', [
             'page_id' => $page->id,
             'url' => $page->url,
             'js_rendered' => $event->wasJsRendered,
         ]);
 
-        // Only process once - when raw HTML is first fetched (not JS-rendered)
-        // This prevents duplicate processing when renderPageWithJs dispatches HtmlDomReady again
+        // Skip if already JS-rendered (to avoid double processing)
         if ($event->wasJsRendered) {
-            Log::debug('Skipping processing - page already processed with raw HTML', [
-                'page_id' => $page->id,
-            ]);
+            Log::debug('Skipping - page already JS-rendered', ['page_id' => $page->id]);
             return;
         }
 
-        // Dispatch screenshot job (will render with JS and take screenshot)
-        TakePageScreenshotJob::dispatch($page, true)
-            ->onQueue('screenshots');
+        // Queue screenshot job (requires Puppeteer to be installed)
+        $screenshotsEnabled = config('crawler.screenshots_enabled', false);
+        if ($screenshotsEnabled) {
+            Log::info('📸 Queueing screenshot job...', ['page_id' => $page->id]);
+            TakePageScreenshotJob::dispatch($page, true)->onQueue('screenshots');
+        } else {
+            Log::debug('📸 Screenshots disabled in config', ['page_id' => $page->id]);
+        }
 
-        // Dispatch AI analysis job (will run after screenshot is taken)
-        AnalyzePageWithAiJob::dispatch($page, true)
-            ->onQueue('ai-analysis')
-            ->delay(5); // 5 seconds delay to allow screenshot to complete
+        // Queue AI analysis job (without screenshot if disabled)
+        AnalyzePageWithAiJob::dispatch($page, $screenshotsEnabled)
+            ->onQueue('ai-analysis');
 
-        // Dispatch embedding generation job (will run after AI analysis)
+        // Queue embedding generation job
         GeneratePageEmbeddingJob::dispatch($page)
-            ->onQueue('embeddings')
-            ->delay(30); // 30 seconds delay to allow AI analysis to complete
-    }
+            ->onQueue('embeddings');
 
-    /**
-     * Handle a job failure.
-     */
-    public function failed(HtmlDomReady $event, \Throwable $exception): void
-    {
-        Log::error('Failed to process crawled page', [
-            'page_id' => $event->page->id,
-            'error' => $exception->getMessage(),
+        Log::info('✅ Page processing completed', [
+            'page_id' => $page->id,
+            'screenshot_queued' => $screenshotsEnabled,
+            'ai_analysis_queued' => true,
+            'embedding_queued' => true,
         ]);
     }
 }

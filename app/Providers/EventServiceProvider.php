@@ -40,6 +40,10 @@ class EventServiceProvider extends ServiceProvider
     public function boot(): void
     {
         parent::boot();
+
+        // Disable automatic event discovery to prevent duplicate listener registration.
+        // We use manual registration via the $listen property only.
+        $this->disableEventDiscovery();
     }
 
     /**

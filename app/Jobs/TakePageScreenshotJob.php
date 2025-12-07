@@ -59,24 +59,27 @@ class TakePageScreenshotJob implements ShouldQueue
         ]);
 
         try {
-            if ($this->renderWithJs) {
-                // Render page with JavaScript and take screenshot
-                $crawlerService->renderPageWithJs($this->page, true);
-            } else {
-                // Just take a screenshot without re-rendering
-                $crawlerService->takeScreenshot($this->page);
-            }
+            // Take screenshot directly (Browsershot will render with JS internally)
+            $screenshotPath = $crawlerService->takeScreenshot($this->page);
 
-            Log::info('✅ Screenshot taken successfully', [
-                'page_id' => $this->page->id,
-                'url' => $this->page->url,
-                'render_with_js' => $this->renderWithJs,
-            ]);
+            if ($screenshotPath) {
+                Log::info('✅ Screenshot taken successfully', [
+                    'page_id' => $this->page->id,
+                    'url' => $this->page->url,
+                    'path' => $screenshotPath,
+                ]);
+            } else {
+                Log::warning('⚠️ Screenshot returned null', [
+                    'page_id' => $this->page->id,
+                    'url' => $this->page->url,
+                ]);
+            }
         } catch (\Exception $e) {
-            Log::error('Failed to take screenshot', [
+            Log::error('❌ Failed to take screenshot', [
                 'page_id' => $this->page->id,
                 'url' => $this->page->url,
                 'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
             ]);
 
             throw $e;
