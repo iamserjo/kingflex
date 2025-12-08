@@ -173,6 +173,8 @@ class HtmlSanitizerService
      */
     public function cleanHtml(string $html): string
     {
+        // First, fix UTF-8 encoding issues
+        $html = $this->sanitizeUtf8($html);
         // Remove HTML comments
         $html = preg_replace('/<!--.*?-->/s', '', $html);
 
@@ -254,6 +256,39 @@ class HtmlSanitizerService
         $text = html_entity_decode($text, ENT_QUOTES, 'UTF-8');
         $text = preg_replace('/\s+/', ' ', $text);
         return trim($text);
+    }
+
+    /**
+     * Sanitize UTF-8 string, removing invalid characters.
+     *
+     * @param string $string
+     * @return string
+     */
+    public function sanitizeUtf8(string $string): string
+    {
+        // Remove NULL bytes
+        $string = str_replace("\0", '', $string);
+
+        // Try to detect and convert encoding
+        $encoding = mb_detect_encoding($string, ['UTF-8', 'ISO-8859-1', 'Windows-1251', 'Windows-1252', 'KOI8-R'], true);
+
+        if ($encoding && $encoding !== 'UTF-8') {
+            $string = mb_convert_encoding($string, 'UTF-8', $encoding);
+        }
+
+        // Remove invalid UTF-8 sequences
+        $string = mb_convert_encoding($string, 'UTF-8', 'UTF-8');
+
+        // Use iconv to remove invalid characters
+        $string = @iconv('UTF-8', 'UTF-8//IGNORE', $string) ?: $string;
+
+        // Remove control characters except newlines and tabs
+        $string = preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/u', '', $string);
+
+        // Remove BOM if present
+        $string = preg_replace('/^\xEF\xBB\xBF/', '', $string);
+
+        return $string;
     }
 }
 

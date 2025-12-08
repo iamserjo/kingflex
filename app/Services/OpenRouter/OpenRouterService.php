@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Services\OpenRouter;
 
+use App\Services\Json\JsonParserService;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
@@ -71,6 +72,9 @@ class OpenRouterService
         ]);
 
         try {
+            // Sanitize messages to ensure valid UTF-8
+            $messages = $this->sanitizeMessages($messages);
+
             $requestBody = [
                 'model' => $model,
                 'messages' => $messages,
@@ -149,23 +153,23 @@ class OpenRouterService
             'usage' => $response['usage'] ?? [],
         ]);
 
-        try {
-            $parsed = json_decode($response['content'], true, 512, JSON_THROW_ON_ERROR);
+        // Use JsonParserService to parse response
+        $jsonParser = app(JsonParserService::class);
+        $parsed = $jsonParser->parse($response['content']);
 
-            Log::info('✅ OpenRouter chatJson success', [
-                'page_type' => $parsed['page_type'] ?? 'unknown',
-                'has_title' => !empty($parsed['title']),
-                'has_summary' => !empty($parsed['summary']),
-            ]);
-
-            return $parsed;
-        } catch (\JsonException $e) {
+        if ($parsed === null) {
             Log::error('❌ Failed to parse OpenRouter JSON response', [
                 'content' => substr($response['content'], 0, 500),
-                'error' => $e->getMessage(),
             ]);
             return null;
         }
+
+        Log::info('✅ OpenRouter chatJson success', [
+            'keys' => array_keys($parsed),
+            'page_type' => $parsed['page_type'] ?? null,
+        ]);
+
+        return $parsed;
     }
 
     /**
@@ -283,6 +287,59 @@ class OpenRouterService
     public function isConfigured(): bool
     {
         return !empty($this->apiKey);
+    }
+
+    /**
+     * Sanitize messages to ensure valid UTF-8 encoding.
+     *
+     * @param array<array{role: string, content: string|array}> $messages
+     * @return array<array{role: string, content: string|array}>
+     */
+    private function sanitizeMessages(array $messages): array
+    {
+        return array_map(function ($message) {
+            if (is_string($message['content'])) {
+                $message['content'] = $this->sanitizeUtf8($message['content']);
+            } elseif (is_array($message['content'])) {
+                $message['content'] = array_map(function ($item) {
+                    if (isset($item['text']) && is_string($item['text'])) {
+                        $item['text'] = $this->sanitizeUtf8($item['text']);
+                    }
+                    return $item;
+                }, $message['content']);
+            }
+            return $message;
+        }, $messages);
+    }
+
+    /**
+     * Sanitize UTF-8 string, removing invalid characters.
+     *
+     * @param string $string
+     * @return string
+     */
+    private function sanitizeUtf8(string $string): string
+    {
+        // Remove NULL bytes
+        $string = str_replace("\0", '', $string);
+
+        // Try to detect and convert encoding
+        $encoding = mb_detect_encoding($string, ['UTF-8', 'ISO-8859-1', 'Windows-1251', 'Windows-1252', 'KOI8-R'], true);
+
+        if ($encoding && $encoding !== 'UTF-8') {
+            $string = mb_convert_encoding($string, 'UTF-8', $encoding);
+        }
+
+        // Remove invalid UTF-8 sequences
+        $string = mb_convert_encoding($string, 'UTF-8', 'UTF-8');
+
+        // Use iconv to remove invalid characters
+        $string = @iconv('UTF-8', 'UTF-8//IGNORE', $string) ?: $string;
+
+        // Remove control characters except newlines and tabs
+        $string = preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/u', '', $string);
+
+        return $string;
     }
 }
 

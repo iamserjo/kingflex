@@ -30,7 +30,7 @@ return [
     |
     */
 
-    'chat_model' => env('OPENROUTER_CHAT_MODEL', 'google/gemini-2.5-flash-preview-05-20'),
+    'chat_model' => env('OPENROUTER_CHAT_MODEL', 'google/gemini-2.5-flash-lite'),
 
     // Maximum tokens for chat completion
     'chat_max_tokens' => env('OPENROUTER_CHAT_MAX_TOKENS', 4096),
