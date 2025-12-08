@@ -4,7 +4,8 @@
     "type": "module",
     "scripts": {
         "build": "vite build",
-        "dev": "vite"
+        "dev": "vite",
+        "postinstall": "npx playwright install chromium || true"
     },
     "devDependencies": {
         "@tailwindcss/vite": "^4.0.0",
@@ -15,6 +16,7 @@
         "vite": "^7.0.7"
     },
     "dependencies": {
+        "playwright": "^1.57.0",
         "puppeteer": "^24.32.0",
         "three": "^0.181.2"
     }

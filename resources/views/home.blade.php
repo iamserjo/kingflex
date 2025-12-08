@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="csrf-token" content="{{ csrf_token() }}">
 
-    <title>{{ config('app.name', 'MarketKing') }} - Search</title>
+    <title>{{ config('app.name', 'MarketKing') }} - Semantic Search</title>
 
     <link rel="preconnect" href="https://fonts.bunny.net">
     <link href="https://fonts.bunny.net/css?family=jetbrains-mono:400,500,600,700|outfit:300,400,500,600,700" rel="stylesheet" />
@@ -25,6 +25,9 @@
             --accent-glow: rgba(99, 102, 241, 0.3);
             --success: #22c55e;
             --warning: #f59e0b;
+            --score-high: #22c55e;
+            --score-medium: #f59e0b;
+            --score-low: #8888a0;
         }
 
         * {
@@ -94,6 +97,11 @@
             color: var(--text-secondary);
             font-size: 1.1rem;
             font-weight: 300;
+        }
+
+        .tagline .highlight {
+            color: var(--accent-secondary);
+            font-weight: 500;
         }
 
         /* Search box */
@@ -183,67 +191,6 @@
             to { transform: rotate(360deg); }
         }
 
-        /* Parsed tags display */
-        .parsed-tags {
-            margin-bottom: 2rem;
-            padding: 1.25rem;
-            background: var(--bg-secondary);
-            border: 1px solid var(--border-color);
-            border-radius: 1rem;
-            display: none;
-        }
-
-        .parsed-tags.visible {
-            display: block;
-            animation: fadeIn 0.3s ease;
-        }
-
-        .parsed-tags-title {
-            font-size: 0.85rem;
-            color: var(--text-secondary);
-            margin-bottom: 0.75rem;
-            font-weight: 500;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-        }
-
-        .tags-list {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 0.5rem;
-        }
-
-        .tag-badge {
-            display: inline-flex;
-            align-items: center;
-            gap: 0.5rem;
-            padding: 0.5rem 0.875rem;
-            background: var(--bg-card);
-            border: 1px solid var(--border-color);
-            border-radius: 2rem;
-            font-size: 0.9rem;
-            transition: all 0.2s ease;
-        }
-
-        .tag-badge:hover {
-            border-color: var(--accent-primary);
-            transform: translateY(-1px);
-        }
-
-        .tag-name {
-            color: var(--text-primary);
-        }
-
-        .tag-weight {
-            color: var(--accent-secondary);
-            font-size: 0.75rem;
-            font-weight: 600;
-            font-family: 'JetBrains Mono', monospace;
-            padding: 0.125rem 0.375rem;
-            background: rgba(99, 102, 241, 0.15);
-            border-radius: 0.25rem;
-        }
-
         /* Results section */
         .results {
             flex: 1;
@@ -267,6 +214,15 @@
             color: var(--text-primary);
         }
 
+        .query-time {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            font-family: 'JetBrains Mono', monospace;
+            padding: 0.25rem 0.5rem;
+            background: var(--bg-card);
+            border-radius: 0.375rem;
+        }
+
         /* Result card */
         .result-card {
             background: var(--bg-secondary);
@@ -285,9 +241,24 @@
 
         .result-header {
             display: flex;
-            justify-content: space-between;
             align-items: flex-start;
+            gap: 1rem;
             margin-bottom: 0.75rem;
+        }
+
+        .result-rank {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            padding: 0.25rem 0.5rem;
+            background: var(--bg-card);
+            border-radius: 0.375rem;
+            flex-shrink: 0;
+        }
+
+        .result-info {
+            flex: 1;
+            min-width: 0;
         }
 
         .result-title {
@@ -311,26 +282,65 @@
         .result-url {
             font-size: 0.85rem;
             color: var(--text-secondary);
-            word-break: break-all;
             font-family: 'JetBrains Mono', monospace;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
 
         .result-score {
-            background: linear-gradient(135deg, var(--accent-primary), #7c3aed);
-            color: white;
             padding: 0.375rem 0.75rem;
             border-radius: 0.5rem;
-            font-size: 0.85rem;
+            font-size: 0.9rem;
             font-weight: 600;
             font-family: 'JetBrains Mono', monospace;
             white-space: nowrap;
+            flex-shrink: 0;
+        }
+
+        .result-score.score-high {
+            background: rgba(34, 197, 94, 0.15);
+            color: var(--score-high);
+            border: 1px solid rgba(34, 197, 94, 0.3);
+        }
+
+        .result-score.score-medium {
+            background: rgba(245, 158, 11, 0.15);
+            color: var(--score-medium);
+            border: 1px solid rgba(245, 158, 11, 0.3);
+        }
+
+        .result-score.score-low {
+            background: var(--bg-card);
+            color: var(--score-low);
+            border: 1px solid var(--border-color);
+        }
+
+        .result-recap {
+            color: var(--text-primary);
+            font-size: 0.95rem;
+            line-height: 1.6;
+            margin: 0.75rem 0;
+            padding: 0.75rem;
+            background: var(--bg-card);
+            border-radius: 0.5rem;
+            border-left: 3px solid var(--accent-primary);
         }
 
         .result-summary {
             color: var(--text-secondary);
-            font-size: 0.95rem;
+            font-size: 0.9rem;
             line-height: 1.6;
-            margin-bottom: 1rem;
+            margin: 0.5rem 0;
+        }
+
+        .result-footer {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            margin-top: 1rem;
+            padding-top: 0.75rem;
+            border-top: 1px solid var(--border-color);
         }
 
         .result-type {
@@ -345,32 +355,16 @@
             letter-spacing: 0.05em;
         }
 
-        .matched-tags {
-            margin-top: 1rem;
-            padding-top: 1rem;
-            border-top: 1px solid var(--border-color);
-        }
-
-        .matched-tags-title {
-            font-size: 0.75rem;
-            color: var(--text-secondary);
-            margin-bottom: 0.5rem;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-        }
-
-        .matched-tag {
+        .result-distance {
             display: inline-flex;
             align-items: center;
-            gap: 0.25rem;
-            padding: 0.25rem 0.5rem;
-            background: rgba(34, 197, 94, 0.1);
-            border: 1px solid rgba(34, 197, 94, 0.3);
-            border-radius: 0.375rem;
+            gap: 0.375rem;
             font-size: 0.8rem;
-            color: var(--success);
-            margin-right: 0.5rem;
-            margin-bottom: 0.5rem;
+            color: var(--accent-secondary);
+        }
+
+        .result-distance svg {
+            opacity: 0.7;
         }
 
         /* Empty state */
@@ -441,12 +435,16 @@
             }
 
             .result-header {
-                flex-direction: column;
-                gap: 0.75rem;
+                flex-wrap: wrap;
             }
 
             .result-score {
-                align-self: flex-start;
+                order: -1;
+                width: auto;
+            }
+
+            .result-info {
+                width: 100%;
             }
         }
     </style>
@@ -457,7 +455,7 @@
     <div class="container">
         <header class="header">
             <h1 class="logo">MarketKing</h1>
-            <p class="tagline">AI-Powered Smart Search</p>
+            <p class="tagline"><span class="highlight">Semantic</span> AI-Powered Search</p>
         </header>
 
         <div class="search-container">
@@ -466,7 +464,7 @@
                     type="text"
                     id="search-input"
                     class="search-input"
-                    placeholder="What are you looking for?"
+                    placeholder="Describe what you're looking for..."
                     autocomplete="off"
                     autofocus
                 >
@@ -481,21 +479,15 @@
 
         <div id="error-message" class="error-message"></div>
 
-        <div id="parsed-tags" class="parsed-tags">
-            <div class="parsed-tags-title">Parsed Search Tags</div>
-            <div id="tags-list" class="tags-list"></div>
-        </div>
-
         <div class="results" id="results">
             <div class="empty-state">
                 <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09Z" />
                 </svg>
-                <h3>Start Searching</h3>
-                <p>Enter your query above to find relevant pages</p>
+                <h3>Semantic Search</h3>
+                <p>Enter a query to find relevant pages by meaning, not just keywords</p>
             </div>
         </div>
     </div>
 </body>
 </html>
-

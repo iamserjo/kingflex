@@ -221,27 +221,60 @@ class OpenRouterService
      */
     public function createEmbedding(string $text): ?array
     {
+        Log::info('🔢 Creating embedding', [
+            'model' => $this->embeddingModel,
+            'text_length' => strlen($text),
+            'text_preview' => substr($text, 0, 100) . '...',
+        ]);
+
         try {
             $response = $this->client()->post('/embeddings', [
                 'model' => $this->embeddingModel,
                 'input' => $text,
             ]);
 
-            if (!$response->successful()) {
-                Log::error('OpenRouter embedding request failed', [
-                    'status' => $response->status(),
-                    'body' => $response->body(),
+            $data = $response->json();
+
+            Log::debug('📥 Embedding response', [
+                'status' => $response->status(),
+                'successful' => $response->successful(),
+            ]);
+
+            // Check for API error in response body (OpenRouter returns 200 with error)
+            if (isset($data['error'])) {
+                Log::error('❌ OpenRouter embedding API error', [
+                    'error' => $data['error'],
+                    'model' => $this->embeddingModel,
                 ]);
                 return null;
             }
 
-            $data = $response->json();
+            if (!$response->successful()) {
+                Log::error('❌ OpenRouter embedding request failed', [
+                    'status' => $response->status(),
+                    'body' => $response->body(),
+                    'model' => $this->embeddingModel,
+                ]);
+                return null;
+            }
 
-            return $data['data'][0]['embedding'] ?? null;
+            if (!isset($data['data'][0]['embedding'])) {
+                Log::error('❌ Embedding not found in response', [
+                    'response_keys' => array_keys($data),
+                    'data' => $data,
+                ]);
+                return null;
+            }
+
+            Log::info('✅ Embedding created', [
+                'dimensions' => count($data['data'][0]['embedding']),
+            ]);
+
+            return $data['data'][0]['embedding'];
         } catch (\Exception $e) {
-            Log::error('OpenRouter embedding request exception', [
+            Log::error('❌ OpenRouter embedding exception', [
                 'message' => $e->getMessage(),
-                'trace' => $e->getTraceAsString(),
+                'model' => $this->embeddingModel,
             ]);
             return null;
         }

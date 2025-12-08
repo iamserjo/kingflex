@@ -5,183 +5,173 @@ declare(strict_types=1);
 namespace App\Services;
 
 use App\Models\Page;
-use App\Models\PageContentTag;
 use App\Services\OpenRouter\OpenRouterService;
-use Illuminate\Support\Collection;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 /**
- * Service for AI-powered search functionality.
- * Parses user queries into weighted tags and searches pages by tag matching.
+ * Service for AI-powered semantic search functionality.
+ * Uses vector embeddings to find semantically similar pages.
  */
 class SearchService
 {
+    /**
+     * Minimum similarity threshold (0-1). Pages below this won't be returned.
+     */
+    private const MIN_SIMILARITY_THRESHOLD = 0.3;
+
+    /**
+     * Maximum results to return.
+     */
+    private const MAX_RESULTS = 50;
+
     public function __construct(
         private readonly OpenRouterService $openRouter,
     ) {}
 
     /**
-     * Search pages using AI-parsed tags.
+     * Search pages using vector similarity.
      *
      * @param string $query User search query
-     * @return array{tags: array<string, int>, results: array<int, array>, error: string|null}
+     * @return array{results: array<int, array>, error: string|null, query_time_ms: int}
      */
     public function search(string $query): array
     {
-        // Parse query into weighted tags using AI
-        $parsedTags = $this->parseQueryToTags($query);
+        $startTime = microtime(true);
 
-        if ($parsedTags === null) {
-            return [
-                'tags' => [],
-                'results' => [],
-                'error' => 'Failed to parse search query',
-            ];
-        }
-
-        if (empty($parsedTags)) {
-            return [
-                'tags' => [],
-                'results' => [],
-                'error' => null,
-            ];
-        }
-
-        Log::info('🔍 Search query parsed', [
+        Log::info('🔍 [Search] Starting vector search', [
             'query' => $query,
-            'tags' => $parsedTags,
+            'query_length' => strlen($query),
         ]);
 
-        // Search pages by tags
-        $results = $this->searchByTags($parsedTags);
+        // Check if OpenRouter is configured
+        if (!$this->openRouter->isConfigured()) {
+            Log::warning('🔍 [Search] OpenRouter not configured');
+            return [
+                'results' => [],
+                'error' => 'Search service is not configured',
+                'query_time_ms' => $this->getElapsedMs($startTime),
+            ];
+        }
+
+        // Create embedding for user query
+        Log::debug('🔍 [Search] Creating embedding for query...');
+        $embeddingStartTime = microtime(true);
+
+        $queryEmbedding = $this->openRouter->createEmbedding($query);
+
+        $embeddingTime = $this->getElapsedMs($embeddingStartTime);
+
+        if ($queryEmbedding === null) {
+            Log::error('🔍 [Search] Failed to create query embedding', [
+                'query' => $query,
+                'embedding_time_ms' => $embeddingTime,
+            ]);
+            return [
+                'results' => [],
+                'error' => 'Failed to process search query',
+                'query_time_ms' => $this->getElapsedMs($startTime),
+            ];
+        }
+
+        Log::debug('🔍 [Search] Query embedding created', [
+            'dimensions' => count($queryEmbedding),
+            'embedding_time_ms' => $embeddingTime,
+        ]);
+
+        // Search pages by vector similarity
+        Log::debug('🔍 [Search] Searching pages by vector similarity...');
+        $searchStartTime = microtime(true);
+
+        $results = $this->searchByEmbedding($queryEmbedding);
+
+        $searchTime = $this->getElapsedMs($searchStartTime);
+        $totalTime = $this->getElapsedMs($startTime);
+
+        Log::info('🔍 [Search] ✅ Search completed', [
+            'query' => $query,
+            'results_count' => count($results),
+            'embedding_time_ms' => $embeddingTime,
+            'db_search_time_ms' => $searchTime,
+            'total_time_ms' => $totalTime,
+        ]);
 
         return [
-            'tags' => $parsedTags,
             'results' => $results,
             'error' => null,
+            'query_time_ms' => $totalTime,
         ];
     }
 
     /**
-     * Parse user query into weighted tags using AI.
+     * Search pages by embedding vector similarity.
      *
-     * @param string $query
-     * @return array<string, int>|null
-     */
-    private function parseQueryToTags(string $query): ?array
-    {
-        if (!$this->openRouter->isConfigured()) {
-            Log::warning('OpenRouter not configured, cannot parse search query');
-            return null;
-        }
-
-        $systemPrompt = view('ai-prompts.parse-search-query')->render();
-
-        $result = $this->openRouter->chatJson($systemPrompt, $query);
-
-        if ($result === null || !isset($result['tags'])) {
-            Log::error('Failed to parse search query', [
-                'query' => $query,
-            ]);
-            return null;
-        }
-
-        // Validate and normalize tags
-        $tags = [];
-        foreach ($result['tags'] as $tag => $weight) {
-            $tag = trim((string) $tag);
-            if (!empty($tag)) {
-                $tags[$tag] = max(1, min(100, (int) $weight));
-            }
-        }
-
-        return $tags;
-    }
-
-    /**
-     * Search pages by matching tags with weight proximity ranking.
-     *
-     * @param array<string, int> $searchTags Tags with weights from user query
+     * @param array<float> $queryEmbedding Query embedding vector
      * @return array<int, array>
      */
-    private function searchByTags(array $searchTags): array
+    private function searchByEmbedding(array $queryEmbedding): array
     {
-        $tagNames = array_keys($searchTags);
+        // Convert embedding to pgvector format
+        $embeddingString = '[' . implode(',', $queryEmbedding) . ']';
 
-        // Find all matching tags in database (case-insensitive LIKE match)
-        $matchingTags = PageContentTag::query()
-            ->where(function ($query) use ($tagNames) {
-                foreach ($tagNames as $tag) {
-                    $query->orWhere('tag', 'ILIKE', '%' . $tag . '%');
-                }
-            })
-            ->with('page:id,url,title,summary,page_type')
+        // Query pages with vector similarity using cosine distance
+        // <=> operator returns cosine distance (0 = identical, 2 = opposite)
+        $pages = Page::query()
+            ->whereNotNull('embedding')
+            ->selectRaw('id, url, title, summary, recap_content, page_type, embedding <=> ? as distance', [$embeddingString])
+            ->orderBy('distance')
+            ->limit(self::MAX_RESULTS * 2) // Get more to filter by threshold
             ->get();
 
-        if ($matchingTags->isEmpty()) {
-            return [];
-        }
+        Log::debug('🔍 [Search] Raw results from database', [
+            'total_pages_with_embedding' => Page::whereNotNull('embedding')->count(),
+            'results_before_filter' => $pages->count(),
+        ]);
 
-        // Calculate scores for each page
-        $pageScores = [];
-
-        foreach ($matchingTags as $dbTag) {
-            $pageId = $dbTag->page_id;
-
-            if (!isset($pageScores[$pageId])) {
-                $pageScores[$pageId] = [
-                    'page' => $dbTag->page,
-                    'score' => 0,
-                    'matched_tags' => [],
-                ];
-            }
-
-            // Find which search tag matched this database tag
-            foreach ($searchTags as $searchTag => $searchWeight) {
-                if (mb_stripos($dbTag->tag, $searchTag) !== false || mb_stripos($searchTag, $dbTag->tag) !== false) {
-                    // Calculate weight proximity bonus (closer weights = higher bonus)
-                    // Bonus ranges from 0.5 (max difference) to 1.0 (exact match)
-                    $weightDiff = abs($searchWeight - $dbTag->weight);
-                    $weightProximityBonus = 1 - ($weightDiff / 200); // 0.5 to 1.0 range
-
-                    // Score = search_weight * db_weight * proximity_bonus
-                    $tagScore = ($searchWeight / 100) * ($dbTag->weight / 100) * $weightProximityBonus;
-
-                    $pageScores[$pageId]['score'] += $tagScore;
-                    $pageScores[$pageId]['matched_tags'][] = [
-                        'search_tag' => $searchTag,
-                        'db_tag' => $dbTag->tag,
-                        'search_weight' => $searchWeight,
-                        'db_weight' => $dbTag->weight,
-                        'tag_score' => round($tagScore, 4),
-                    ];
-                }
-            }
-        }
-
-        // Sort by score descending
-        uasort($pageScores, fn($a, $b) => $b['score'] <=> $a['score']);
-
-        // Format results
+        // Convert to array and calculate similarity scores
         $results = [];
-        foreach (array_slice($pageScores, 0, 50, true) as $pageId => $data) {
-            if ($data['page'] === null || $data['score'] <= 0) {
+
+        foreach ($pages as $page) {
+            // Convert distance to similarity score (0-1)
+            // Cosine distance ranges 0-2, so similarity = 1 - (distance / 2)
+            $similarity = 1 - ($page->distance / 2);
+
+            // Skip results below threshold
+            if ($similarity < self::MIN_SIMILARITY_THRESHOLD) {
                 continue;
             }
 
             $results[] = [
-                'page_id' => $pageId,
-                'url' => $data['page']->url,
-                'title' => $data['page']->title,
-                'summary' => $data['page']->summary,
-                'page_type' => $data['page']->page_type,
-                'score' => round($data['score'], 4),
-                'matched_tags' => $data['matched_tags'],
+                'page_id' => $page->id,
+                'url' => $page->url,
+                'title' => $page->title,
+                'summary' => $page->summary,
+                'recap_content' => $page->recap_content,
+                'page_type' => $page->page_type,
+                'score' => round($similarity, 4),
+                'distance' => round($page->distance, 6),
             ];
+
+            // Stop after MAX_RESULTS
+            if (count($results) >= self::MAX_RESULTS) {
+                break;
+            }
         }
+
+        Log::debug('🔍 [Search] Results after filtering', [
+            'results_after_filter' => count($results),
+            'min_threshold' => self::MIN_SIMILARITY_THRESHOLD,
+            'top_score' => $results[0]['score'] ?? null,
+            'bottom_score' => end($results)['score'] ?? null,
+        ]);
 
         return $results;
     }
-}
 
+    /**
+     * Get elapsed time in milliseconds.
+     */
+    private function getElapsedMs(float $startTime): int
+    {
+        return (int) round((microtime(true) - $startTime) * 1000);
+    }
+}

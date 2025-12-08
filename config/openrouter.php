@@ -48,10 +48,16 @@ return [
     |
     */
 
-    'embedding_model' => env('OPENROUTER_EMBEDDING_MODEL', 'openai/text-embedding-3-small'),
+    // Available models: https://openrouter.ai/models?output_modalities=embeddings
+    // Free: thenlper/gte-large (1024 dim), sentence-transformers/all-minilm-l6-v2 (384 dim)
+    // Paid: openai/text-embedding-ada-002 (1536 dim), openai/text-embedding-3-small (1536 dim)
+    'embedding_model' => env('OPENROUTER_EMBEDDING_MODEL', 'thenlper/gte-large'),
 
     // Embedding dimensions (depends on model)
-    'embedding_dimensions' => env('OPENROUTER_EMBEDDING_DIMENSIONS', 1536),
+    // thenlper/gte-large: 1024
+    // openai/text-embedding-ada-002, text-embedding-3-small: 1536
+    // openai/text-embedding-3-large: 3072
+    'embedding_dimensions' => env('OPENROUTER_EMBEDDING_DIMENSIONS', 1024),
 
     /*
     |--------------------------------------------------------------------------

@@ -27,6 +27,7 @@ use Illuminate\Database\Eloquent\Relations\HasOne;
  * @property int $inbound_links_count
  * @property \Carbon\Carbon|null $last_crawled_at
  * @property string|null $raw_html
+ * @property string|null $content_with_tags_purified Rendered content with semantic HTML tags
  * @property array|null $embedding
  * @property \Carbon\Carbon $created_at
  * @property \Carbon\Carbon $updated_at
@@ -70,6 +71,7 @@ class Page extends Model
         'inbound_links_count',
         'last_crawled_at',
         'raw_html',
+        'content_with_tags_purified',
         'embedding',
     ];
 
