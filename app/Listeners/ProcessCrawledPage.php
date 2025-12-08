@@ -9,6 +9,7 @@ use App\Jobs\AnalyzePageWithAiJob;
 use App\Jobs\ExtractContentTagsJob;
 use App\Jobs\ExtractSearchTagsJob;
 use App\Jobs\GeneratePageEmbeddingJob;
+use App\Jobs\PageRecapJob;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -37,22 +38,39 @@ class ProcessCrawledPage
             return;
         }
 
-        // 1. AI Page Analysis (type, summary, structured data)
-        $this->runPageAnalysis($page);
+        // 1. Create page recap (one sentence summary) and generate embedding
+        $this->runPageRecap($page);
 
-        // 2. Extract Content Tags (what the page is about)
-        $this->runContentTagsExtraction($page);
-
-        // 3. Extract Search Tags (how users might search)
-        $this->runSearchTagsExtraction($page);
-
-        // 4. Queue embedding generation (can be async)
-        GeneratePageEmbeddingJob::dispatch($page)
-            ->onQueue('embeddings');
+        // TODO: Temporarily disabled - uncomment when needed
+        // // 2. AI Page Analysis (type, summary, structured data)
+        // $this->runPageAnalysis($page);
+        //
+        // // 3. Extract Content Tags (what the page is about)
+        // $this->runContentTagsExtraction($page);
+        //
+        // // 4. Extract Search Tags (how users might search)
+        // $this->runSearchTagsExtraction($page);
 
         Log::info('✅ Page processing completed', [
             'page_id' => $page->id,
         ]);
+    }
+
+    /**
+     * Create page recap and generate embedding.
+     */
+    private function runPageRecap($page): void
+    {
+        try {
+            Log::info('📝 [1/1] Creating page recap...', ['page_id' => $page->id]);
+            PageRecapJob::dispatchSync($page);
+            Log::info('✅ Page recap completed', ['page_id' => $page->id]);
+        } catch (\Exception $e) {
+            Log::error('❌ Page recap failed', [
+                'page_id' => $page->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
     }
 
     /**
@@ -61,8 +79,8 @@ class ProcessCrawledPage
     private function runPageAnalysis($page): void
     {
         try {
-            Log::info('🤖 [1/3] Starting page analysis...', ['page_id' => $page->id]);
-            AnalyzePageWithAiJob::dispatch($page, false);
+            Log::info('🤖 Starting page analysis...', ['page_id' => $page->id]);
+            AnalyzePageWithAiJob::dispatchSync($page, false);
             Log::info('✅ Page analysis completed', ['page_id' => $page->id]);
         } catch (\Exception $e) {
             Log::error('❌ Page analysis failed', [
@@ -78,8 +96,8 @@ class ProcessCrawledPage
     private function runContentTagsExtraction($page): void
     {
         try {
-            Log::info('🏷️ [2/3] Extracting content tags...', ['page_id' => $page->id]);
-            ExtractContentTagsJob::dispatch($page);
+            Log::info('🏷️ Extracting content tags...', ['page_id' => $page->id]);
+            ExtractContentTagsJob::dispatchSync($page);
             Log::info('✅ Content tags extracted', ['page_id' => $page->id]);
         } catch (\Exception $e) {
             Log::error('❌ Content tags extraction failed', [
@@ -95,7 +113,7 @@ class ProcessCrawledPage
     private function runSearchTagsExtraction($page): void
     {
         try {
-            Log::info('🔍 [3/3] Extracting search tags...', ['page_id' => $page->id]);
+            Log::info('🔍 Extracting search tags...', ['page_id' => $page->id]);
             ExtractSearchTagsJob::dispatchSync($page);
             Log::info('✅ Search tags extracted', ['page_id' => $page->id]);
         } catch (\Exception $e) {
@@ -106,4 +124,3 @@ class ProcessCrawledPage
         }
     }
 }
-
