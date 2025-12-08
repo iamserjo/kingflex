@@ -62,7 +62,7 @@ class ProcessCrawledPage
     {
         try {
             Log::info('🤖 [1/3] Starting page analysis...', ['page_id' => $page->id]);
-            AnalyzePageWithAiJob::dispatchSync($page, false);
+            AnalyzePageWithAiJob::dispatch($page, false);
             Log::info('✅ Page analysis completed', ['page_id' => $page->id]);
         } catch (\Exception $e) {
             Log::error('❌ Page analysis failed', [
@@ -79,7 +79,7 @@ class ProcessCrawledPage
     {
         try {
             Log::info('🏷️ [2/3] Extracting content tags...', ['page_id' => $page->id]);
-            ExtractContentTagsJob::dispatchSync($page);
+            ExtractContentTagsJob::dispatch($page);
             Log::info('✅ Content tags extracted', ['page_id' => $page->id]);
         } catch (\Exception $e) {
             Log::error('❌ Content tags extraction failed', [
