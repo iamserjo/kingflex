@@ -5,8 +5,6 @@ declare(strict_types=1);
 namespace App\Providers;
 
 use App\Events\HtmlDomReady;
-use App\Events\PageRawHtmlFetched;
-use App\Events\PageRendered;
 use App\Listeners\ProcessCrawledPage;
 use Illuminate\Foundation\Support\Providers\EventServiceProvider as ServiceProvider;
 
@@ -18,19 +16,9 @@ class EventServiceProvider extends ServiceProvider
      * @var array<class-string, array<int, class-string>>
      */
     protected $listen = [
-        // Process page when DOM is ready (after raw HTML fetch or JS rendering)
+        // Process page when DOM is ready
         HtmlDomReady::class => [
             ProcessCrawledPage::class,
-        ],
-
-        // These events are dispatched but handled by HtmlDomReady flow
-        // They can be used for logging, metrics, or additional processing
-        PageRawHtmlFetched::class => [
-            // Add listeners here if needed
-        ],
-
-        PageRendered::class => [
-            // Add listeners here if needed
         ],
     ];
 
@@ -42,7 +30,6 @@ class EventServiceProvider extends ServiceProvider
         parent::boot();
 
         // Disable automatic event discovery to prevent duplicate listener registration.
-        // We use manual registration via the $listen property only.
         $this->disableEventDiscovery();
     }
 
@@ -54,4 +41,3 @@ class EventServiceProvider extends ServiceProvider
         return false;
     }
 }
-

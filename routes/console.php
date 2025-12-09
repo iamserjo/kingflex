@@ -10,10 +10,11 @@ Artisan::command('inspire', function () {
 
 /*
 |--------------------------------------------------------------------------
-| Crawler Schedule
+| Page Processing Schedule
 |--------------------------------------------------------------------------
 |
-| The crawler runs automatically every hour via Laravel's task scheduler.
+| Process pages using Playwright browser - extracts content, generates
+| recap and embedding. Runs every 5 minutes, processing 5 pages at a time.
 |
 | To enable, add this to your crontab:
 | * * * * * cd /path-to-your-project && php artisan schedule:run >> /dev/null 2>&1
@@ -21,20 +22,16 @@ Artisan::command('inspire', function () {
 | Or in Docker:
 | * * * * * docker-compose exec laravel.test php artisan schedule:run >> /dev/null 2>&1
 |
-| Logs are written to:
-| - storage/logs/laravel.log (main application log)
-| - storage/logs/crawler.log (crawler console output)
-|
 */
 
-Schedule::command('crawl:update')
-    ->hourly()
+Schedule::command('page:process --limit=5')
+    ->everyFiveMinutes()
     ->withoutOverlapping()
     ->runInBackground()
-    ->appendOutputTo(storage_path('logs/crawler.log'))
+    ->appendOutputTo(storage_path('logs/page-processor.log'))
     ->onSuccess(function () {
-        \Illuminate\Support\Facades\Log::info('✅ Scheduled crawl update completed successfully');
+        \Illuminate\Support\Facades\Log::info('✅ Scheduled page processing completed');
     })
     ->onFailure(function () {
-        \Illuminate\Support\Facades\Log::error('❌ Scheduled crawl update failed');
+        \Illuminate\Support\Facades\Log::error('❌ Scheduled page processing failed');
     });

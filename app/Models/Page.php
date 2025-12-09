@@ -26,6 +26,7 @@ use Illuminate\Database\Eloquent\Relations\HasOne;
  * @property int $depth
  * @property int $inbound_links_count
  * @property \Carbon\Carbon|null $last_crawled_at
+ * @property \Carbon\Carbon|null $processing_started_at Processing lock timestamp
  * @property string|null $raw_html
  * @property string|null $content_with_tags_purified Rendered content with semantic HTML tags
  * @property array|null $embedding
@@ -70,6 +71,7 @@ class Page extends Model
         'depth',
         'inbound_links_count',
         'last_crawled_at',
+        'processing_started_at',
         'raw_html',
         'content_with_tags_purified',
         'embedding',
@@ -88,6 +90,7 @@ class Page extends Model
             'depth' => 'integer',
             'inbound_links_count' => 'integer',
             'last_crawled_at' => 'datetime',
+            'processing_started_at' => 'datetime',
             'embedding' => 'array',
         ];
     }
