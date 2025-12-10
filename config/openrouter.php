@@ -51,13 +51,17 @@ return [
     // Available models: https://openrouter.ai/models?output_modalities=embeddings
     // Free: thenlper/gte-large (1024 dim), sentence-transformers/all-minilm-l6-v2 (384 dim)
     // Paid: openai/text-embedding-ada-002 (1536 dim), openai/text-embedding-3-small (1536 dim)
-    'embedding_model' => env('OPENROUTER_EMBEDDING_MODEL', 'thenlper/gte-large'),
+    // Default to a high-dimension model; override via env as needed
+    'embedding_model' => env('OPENROUTER_EMBEDDING_MODEL', 'text-embedding-3-large'),
 
     // Embedding dimensions (depends on model)
     // thenlper/gte-large: 1024
     // openai/text-embedding-ada-002, text-embedding-3-small: 1536
     // openai/text-embedding-3-large: 3072
-    'embedding_dimensions' => env('OPENROUTER_EMBEDDING_DIMENSIONS', 1024),
+    // text-embedding-3-large outputs 3072 dimensions, but pgvector ivfflat index
+    // limits to 2000 dims. We store first 2000 dims by default.
+    // adjust if you change model (e.g., gemini-embedding-001 is 768)
+    'embedding_dimensions' => env('OPENROUTER_EMBEDDING_DIMENSIONS', 2000),
 
     /*
     |--------------------------------------------------------------------------

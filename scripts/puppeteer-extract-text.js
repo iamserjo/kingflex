@@ -96,6 +96,51 @@ async function extractText() {
             el => el.getAttribute('content')
         ).catch(() => null);
 
+        // Extract meta keywords
+        const metaKeywords = await page.$eval(
+            'meta[name="keywords"]',
+            el => el.getAttribute('content')
+        ).catch(() => null);
+
+        // Extract raw HTML
+        const rawHtml = await page.content();
+
+        // Extract all links from the page
+        const extractedUrls = await page.evaluate(() => {
+            const links = Array.from(document.querySelectorAll('a[href]'));
+            const urls = [];
+            const seen = new Set();
+            
+            for (const link of links) {
+                try {
+                    const href = link.getAttribute('href');
+                    if (!href) continue;
+                    
+                    // Skip javascript:, mailto:, tel:, # anchors
+                    if (href.startsWith('javascript:') || 
+                        href.startsWith('mailto:') || 
+                        href.startsWith('tel:') ||
+                        href === '#' ||
+                        href.startsWith('#')) {
+                        continue;
+                    }
+                    
+                    // Resolve relative URLs
+                    const absoluteUrl = new URL(href, window.location.href).href;
+                    
+                    // Skip if already seen
+                    if (seen.has(absoluteUrl)) continue;
+                    seen.add(absoluteUrl);
+                    
+                    urls.push(absoluteUrl);
+                } catch (e) {
+                    // Skip invalid URLs
+                }
+            }
+            
+            return urls;
+        });
+
         // Extract cleaned HTML with semantic structure
         const cleanedHtml = await page.evaluate(() => {
             // Tags to completely remove (including their content)
@@ -326,9 +371,13 @@ async function extractText() {
                 statusText: statusText,
                 title: title,
                 metaDescription: metaDescription,
+                metaKeywords: metaKeywords,
                 loadTimeMs: loadTime,
                 contentLength: cleanedHtml.length,
+                rawHtmlLength: rawHtml.length,
                 content: cleanedHtml,
+                rawHtml: rawHtml,
+                extractedUrls: extractedUrls,
             };
             console.log(JSON.stringify(result, null, 2));
         } else {

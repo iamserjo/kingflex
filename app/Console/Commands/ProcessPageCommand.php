@@ -7,6 +7,7 @@ namespace App\Console\Commands;
 use App\Models\Page;
 use App\Services\OpenRouter\OpenRouterService;
 use App\Services\Playwright\ContentExtractorService;
+use Carbon\Carbon;
 use Illuminate\Console\Command;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
@@ -30,7 +31,7 @@ class ProcessPageCommand extends Command
     /**
      * Lock timeout in minutes. Stale locks older than this are considered abandoned.
      */
-    private const LOCK_TIMEOUT_MINUTES = 30;
+    private const LOCK_TIMEOUT_MINUTES = 5;
 
     protected $signature = 'page:process
                             {--limit=1 : Number of pages to process}
@@ -68,6 +69,9 @@ class ProcessPageCommand extends Command
             $this->error('❌ OpenRouter is not configured. Set OPENROUTER_API_KEY in .env');
             return self::FAILURE;
         }
+
+        // Cleanup stale locks (processes that were interrupted)
+        $this->cleanupStaleLocks();
 
         // Get pages to process (with locking)
         $pages = $this->getPagesToProcess($limit, $domainFilter, $pageId, $force);
@@ -130,82 +134,81 @@ class ProcessPageCommand extends Command
             return collect();
         }
 
-        // SHORT transaction: select IDs and mark as processing, then commit
-        // This releases the FOR UPDATE lock immediately after marking
-        $pageIds = DB::transaction(function () use ($limit, $domain, $force) {
-            $lockTimeout = now()->subMinutes(self::LOCK_TIMEOUT_MINUTES);
+        // Claim pages one-by-one with FOR UPDATE SKIP LOCKED to minimize bulk locking
+        $claimed = collect();
+        $max = max(1, $limit);
 
-            // Build base query for pages that need processing
-            $query = Page::query();
+        for ($i = 0; $i < $max; $i++) {
+            $row = DB::transaction(function () use ($domain, $force) {
+                $now = Carbon::now();
+                $lockTimeout = $now->copy()->subMinutes(self::LOCK_TIMEOUT_MINUTES);
 
-            // Domain filter
-            if ($domain) {
-                $query->whereHas('domain', fn($q) => $q->where('domain', $domain));
-            }
+                $conditions = [];
+                $params = [];
 
-            // Only pages not currently being processed (or with stale locks)
-            $query->where(function ($q) use ($lockTimeout) {
-                $q->whereNull('processing_started_at')
-                  ->orWhere('processing_started_at', '<', $lockTimeout);
+                // Only pages not currently being processed (or with stale locks)
+                $conditions[] = '(p.processing_started_at IS NULL OR p.processing_started_at < ?)';
+                $params[] = $lockTimeout;
+
+                // Only unprocessed unless --force
+                if (!$force) {
+                    $conditions[] = '(p.last_crawled_at IS NULL OR p.content_with_tags_purified IS NULL OR p.embedding IS NULL)';
+                }
+
+                // Domain filter
+                $joinDomain = '';
+                if ($domain) {
+                    $joinDomain = 'JOIN domains d ON d.id = p.domain_id';
+                    $conditions[] = 'd.domain = ?';
+                    $params[] = $domain;
+                }
+
+                $whereClause = implode(' AND ', $conditions);
+
+                $sql = "
+                    WITH cte AS (
+                        SELECT p.id
+                        FROM pages p
+                        $joinDomain
+                        WHERE $whereClause
+                        ORDER BY CASE WHEN p.last_crawled_at IS NULL THEN 0 ELSE 1 END, p.last_crawled_at ASC
+                        FOR UPDATE SKIP LOCKED
+                        LIMIT 1
+                    )
+                    UPDATE pages p
+                    SET processing_started_at = ?
+                    FROM cte
+                    WHERE p.id = cte.id
+                    RETURNING p.*;
+                ";
+
+                $params[] = $now;
+
+                $rows = DB::select($sql, $params);
+
+                if (empty($rows)) {
+                    return null;
+                }
+
+                Log::info('🌐 [ProcessPage] Page locked for processing', [
+                    'page_id' => $rows[0]->id,
+                ]);
+
+                return $rows[0];
             });
 
-            // Only unprocessed unless --force
-            if (!$force) {
-                $query->where(function ($q) {
-                    $q->whereNull('last_crawled_at')
-                      ->orWhereNull('content_with_tags_purified')
-                      ->orWhereNull('embedding');
-                });
+            if ($row === null) {
+                break; // no more rows
             }
 
-            // Order by priority (never processed first, then by age)
-            $query->orderByRaw('CASE WHEN last_crawled_at IS NULL THEN 0 ELSE 1 END')
-                  ->orderBy('last_crawled_at', 'asc');
-
-            // Debug: count available before locking
-            $availableCount = (clone $query)->count();
-            Log::debug('🌐 [ProcessPage] Query stats before lock', [
-                'available_count' => $availableCount,
-                'limit' => $limit,
-                'force' => $force,
-            ]);
-
-            // FOR UPDATE SKIP LOCKED - skip rows already locked by other processes
-            // Only select IDs to minimize lock time
-            $pageIds = $query->limit($limit)
-                            ->lock('FOR UPDATE SKIP LOCKED')
-                            ->pluck('id')
-                            ->toArray();
-
-            if (empty($pageIds)) {
-                Log::warning('🌐 [ProcessPage] No pages selected after SKIP LOCKED', [
-                    'available_before_lock' => $availableCount,
-                    'pages_with_processing_started' => Page::whereNotNull('processing_started_at')
-                        ->where('processing_started_at', '>=', $lockTimeout)
-                        ->count(),
-                ]);
-                return [];
+            // Hydrate a single Page model from the returned row
+            $pageModel = Page::hydrate([$row])->first();
+            if ($pageModel) {
+                $claimed->push($pageModel);
             }
-
-            // Mark selected pages as being processed IMMEDIATELY
-            // This is our "soft lock" that persists after transaction commits
-            Page::whereIn('id', $pageIds)->update(['processing_started_at' => now()]);
-
-            Log::info('🌐 [ProcessPage] Pages locked for processing', [
-                'count' => count($pageIds),
-                'page_ids' => $pageIds,
-            ]);
-
-            return $pageIds;
-        });
-        // Transaction commits here - FOR UPDATE lock is released!
-
-        if (empty($pageIds)) {
-            return collect();
         }
 
-        // Fetch full page models OUTSIDE transaction (no lock held)
-        return Page::whereIn('id', $pageIds)->get();
+        return $claimed;
     }
 
     /**
@@ -273,6 +276,12 @@ class ProcessPageCommand extends Command
                 $embedding = $this->openRouter->createEmbedding($recap);
 
                 if ($embedding) {
+                    // Trim embedding to configured dimensions to match pgvector column
+                    $targetDims = (int) config('openrouter.embedding_dimensions', count($embedding));
+                    if (count($embedding) > $targetDims) {
+                        $embedding = array_slice($embedding, 0, $targetDims);
+                    }
+
                     $embeddingString = '[' . implode(',', $embedding) . ']';
                     DB::statement('UPDATE pages SET embedding = ? WHERE id = ?', [$embeddingString, $page->id]);
                     $this->info("   ✅ Embedding generated (" . count($embedding) . " dimensions)");
@@ -326,6 +335,26 @@ class ProcessPageCommand extends Command
         Log::debug('🌐 [ProcessPage] Lock released', [
             'page_id' => $page->id,
         ]);
+    }
+
+    /**
+     * Cleanup stale locks older than timeout.
+     */
+    private function cleanupStaleLocks(): void
+    {
+        $cutoff = Carbon::now()->subMinutes(self::LOCK_TIMEOUT_MINUTES);
+        $updated = Page::whereNotNull('processing_started_at')
+            ->where('processing_started_at', '<', $cutoff)
+            ->update(['processing_started_at' => null]);
+
+        if ($updated > 0) {
+            Log::warning('🌐 [ProcessPage] Stale locks cleared', [
+                'count' => $updated,
+                'cutoff' => $cutoff->toDateTimeString(),
+            ]);
+
+            $this->warn("Cleared {$updated} stale locks older than {$cutoff->toDateTimeString()}");
+        }
     }
 
     /**

@@ -29,7 +29,7 @@ class ContentExtractorService
      * @param string $url The URL to extract content from
      * @param int $timeout Page load timeout in milliseconds
      * @param string $waitFor Wait until event (load, domcontentloaded, networkidle, commit)
-     * @return array{success: bool, content: ?string, title: ?string, description: ?string, error: ?string, loadTimeMs: ?int}
+     * @return array{success: bool, content: ?string, rawHtml: ?string, title: ?string, description: ?string, keywords: ?string, extractedUrls: ?array, error: ?string, loadTimeMs: ?int}
      */
     public function extract(
         string $url,
@@ -54,8 +54,11 @@ class ContentExtractorService
             return [
                 'success' => false,
                 'content' => null,
+                'rawHtml' => null,
                 'title' => null,
                 'description' => null,
+                'keywords' => null,
+                'extractedUrls' => null,
                 'error' => 'Playwright script not found',
                 'loadTimeMs' => null,
             ];
@@ -103,8 +106,11 @@ class ContentExtractorService
                 return [
                     'success' => false,
                     'content' => null,
+                    'rawHtml' => null,
                     'title' => null,
                     'description' => null,
+                    'keywords' => null,
+                    'extractedUrls' => null,
                     'error' => $errorOutput ?: 'Process failed with exit code ' . $exitCode,
                     'loadTimeMs' => null,
                 ];
@@ -136,8 +142,11 @@ class ContentExtractorService
                 return [
                     'success' => false,
                     'content' => null,
+                    'rawHtml' => null,
                     'title' => null,
                     'description' => null,
+                    'keywords' => null,
+                    'extractedUrls' => null,
                     'error' => 'Failed to parse JSON output: ' . json_last_error_msg(),
                     'loadTimeMs' => null,
                 ];
@@ -155,8 +164,11 @@ class ContentExtractorService
                 return [
                     'success' => false,
                     'content' => null,
+                    'rawHtml' => null,
                     'title' => null,
                     'description' => null,
+                    'keywords' => null,
+                    'extractedUrls' => null,
                     'error' => $data['error'],
                     'loadTimeMs' => null,
                 ];
@@ -170,7 +182,10 @@ class ContentExtractorService
                 'url' => $url,
                 'title' => $data['title'] ?? null,
                 'hasDescription' => !empty($data['metaDescription']),
+                'hasKeywords' => !empty($data['metaKeywords']),
                 'contentLength' => $contentLength,
+                'rawHtmlLength' => $data['rawHtmlLength'] ?? 0,
+                'extractedUrlsCount' => count($data['extractedUrls'] ?? []),
                 'pageLoadTimeMs' => $pageLoadTime,
                 'totalProcessTimeMs' => $totalTime,
                 'status' => $data['status'] ?? null,
@@ -179,8 +194,11 @@ class ContentExtractorService
             return [
                 'success' => true,
                 'content' => $data['content'] ?? null,
+                'rawHtml' => $data['rawHtml'] ?? null,
                 'title' => $data['title'] ?? null,
                 'description' => $data['metaDescription'] ?? null,
+                'keywords' => $data['metaKeywords'] ?? null,
+                'extractedUrls' => $data['extractedUrls'] ?? [],
                 'error' => null,
                 'loadTimeMs' => $pageLoadTime,
             ];
@@ -199,8 +217,11 @@ class ContentExtractorService
             return [
                 'success' => false,
                 'content' => null,
+                'rawHtml' => null,
                 'title' => null,
                 'description' => null,
+                'keywords' => null,
+                'extractedUrls' => null,
                 'error' => $e->getMessage(),
                 'loadTimeMs' => null,
             ];

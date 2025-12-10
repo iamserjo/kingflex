@@ -18,6 +18,7 @@ use Illuminate\Database\Eloquent\Relations\HasOne;
  * @property string $url
  * @property string $url_hash
  * @property string|null $title
+ * @property string|null $meta_description
  * @property string|null $summary
  * @property string|null $recap_content
  * @property array|null $keywords
@@ -63,6 +64,7 @@ class Page extends Model
         'url',
         'url_hash',
         'title',
+        'meta_description',
         'summary',
         'recap_content',
         'keywords',

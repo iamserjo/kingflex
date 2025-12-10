@@ -110,6 +110,12 @@ class SearchService
      */
     private function searchByEmbedding(array $queryEmbedding): array
     {
+        // Trim embedding to configured dimensions to match pgvector column
+        $targetDims = (int) config('openrouter.embedding_dimensions', count($queryEmbedding));
+        if (count($queryEmbedding) > $targetDims) {
+            $queryEmbedding = array_slice($queryEmbedding, 0, $targetDims);
+        }
+
         // Convert embedding to pgvector format
         $embeddingString = '[' . implode(',', $queryEmbedding) . ']';
 
