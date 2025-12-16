@@ -4,9 +4,9 @@
  * Script to render a page and extract cleaned HTML with semantic structure.
  * Keeps important tags (h1-h6, p, a, img, etc.) and useful attributes (alt, title, href).
  * Removes junk attributes, empty tags, and non-content elements.
- * 
+ *
  * Usage: node puppeteer-extract-text.js <url> [--timeout=30000] [--wait-for=networkidle]
- * 
+ *
  * Options:
  *   --timeout=<ms>       Page load timeout in milliseconds (default: 30000)
  *   --wait-for=<event>   Wait until event: load, domcontentloaded, networkidle, commit
@@ -57,7 +57,7 @@ const outputJson = hasFlag('json');
 
 async function extractText() {
     let browser = null;
-    
+
     try {
         // Launch browser with appropriate flags for Docker/headless environment
         browser = await chromium.launch({
@@ -110,34 +110,34 @@ async function extractText() {
             const links = Array.from(document.querySelectorAll('a[href]'));
             const urls = [];
             const seen = new Set();
-            
+
             for (const link of links) {
                 try {
                     const href = link.getAttribute('href');
                     if (!href) continue;
-                    
+
                     // Skip javascript:, mailto:, tel:, # anchors
-                    if (href.startsWith('javascript:') || 
-                        href.startsWith('mailto:') || 
+                    if (href.startsWith('javascript:') ||
+                        href.startsWith('mailto:') ||
                         href.startsWith('tel:') ||
                         href === '#' ||
                         href.startsWith('#')) {
                         continue;
                     }
-                    
+
                     // Resolve relative URLs
                     const absoluteUrl = new URL(href, window.location.href).href;
-                    
+
                     // Skip if already seen
                     if (seen.has(absoluteUrl)) continue;
                     seen.add(absoluteUrl);
-                    
+
                     urls.push(absoluteUrl);
                 } catch (e) {
                     // Skip invalid URLs
                 }
             }
-            
+
             return urls;
         });
 
@@ -145,9 +145,10 @@ async function extractText() {
         const cleanedHtml = await page.evaluate(() => {
             // Tags to completely remove (including their content)
             const REMOVE_TAGS = new Set([
-                'SCRIPT', 'STYLE', 'NOSCRIPT', 'IFRAME', 'SVG', 'PATH', 
+                'SCRIPT', 'STYLE', 'NOSCRIPT', 'IFRAME', 'SVG', 'PATH',
                 'TEMPLATE', 'CANVAS', 'AUDIO', 'VIDEO', 'SOURCE', 'TRACK',
                 'EMBED', 'OBJECT', 'PARAM', 'MAP', 'AREA',
+                'HEADER',
                 'FOOTER'  // Footer usually contains navigation/legal info, not main content
             ]);
 
@@ -161,7 +162,7 @@ async function extractText() {
                 'TABLE', 'THEAD', 'TBODY', 'TR', 'TH', 'TD', // Tables
                 'DL', 'DT', 'DD',                    // Definition lists
                 'STRONG', 'B', 'EM', 'I', 'MARK',    // Emphasis
-                'ARTICLE', 'SECTION', 'HEADER', 'MAIN', 'NAV', 'ASIDE',
+                'ARTICLE', 'SECTION', 'MAIN', 'NAV', 'ASIDE',
                 'FIGURE', 'FIGCAPTION',
                 'FORM', 'INPUT', 'BUTTON', 'SELECT', 'OPTION', 'TEXTAREA', 'LABEL',
                 'SPAN', 'DIV',                       // Generic containers (will be unwrapped if empty)
@@ -200,8 +201,8 @@ async function extractText() {
             const isVisible = (el) => {
                 if (!el || el.nodeType !== Node.ELEMENT_NODE) return true;
                 const style = window.getComputedStyle(el);
-                return style.display !== 'none' 
-                    && style.visibility !== 'hidden' 
+                return style.display !== 'none'
+                    && style.visibility !== 'hidden'
                     && style.opacity !== '0';
             };
 
@@ -319,8 +320,8 @@ async function extractText() {
 
                     // Block-level tags get newlines
                     const blockTags = new Set([
-                        'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 
-                        'P', 'BLOCKQUOTE', 'PRE', 
+                        'H1', 'H2', 'H3', 'H4', 'H5', 'H6',
+                        'P', 'BLOCKQUOTE', 'PRE',
                         'UL', 'OL', 'LI',
                         'TABLE', 'TR', 'THEAD', 'TBODY',
                         'DL', 'DT', 'DD',
@@ -402,7 +403,7 @@ async function extractText() {
         if (browser) {
             await browser.close();
         }
-        
+
         if (outputJson) {
             console.log(JSON.stringify({
                 url: url,
@@ -412,7 +413,7 @@ async function extractText() {
         } else {
             console.error(`Error: ${error.message}`);
         }
-        
+
         process.exit(1);
     }
 }

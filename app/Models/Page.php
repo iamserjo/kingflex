@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace App\Models;
 
+use Carbon\Carbon;
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -26,18 +28,24 @@ use Illuminate\Database\Eloquent\Relations\HasOne;
  * @property array|null $metadata
  * @property int $depth
  * @property int $inbound_links_count
- * @property \Carbon\Carbon|null $last_crawled_at
- * @property \Carbon\Carbon|null $processing_started_at Processing lock timestamp
+ * @property Carbon|null $last_crawled_at
+ * @property Carbon|null $recap_generated_at
+ * @property Carbon|null $embedding_generated_at
+ * @property Carbon|null $processing_started_at Processing lock timestamp
  * @property string|null $raw_html
  * @property string|null $content_with_tags_purified Rendered content with semantic HTML tags
+ * @property bool|null $is_product
+ * @property bool|null $is_product_available
+ * @property int|null $product_type_id
+ * @property Carbon|null $product_type_detected_at
  * @property array|null $embedding
- * @property \Carbon\Carbon $created_at
- * @property \Carbon\Carbon $updated_at
+ * @property Carbon $created_at
+ * @property Carbon $updated_at
  *
  * @property-read Domain $domain
- * @property-read \Illuminate\Database\Eloquent\Collection<int, PageLink> $inboundLinks
- * @property-read \Illuminate\Database\Eloquent\Collection<int, PageLink> $outboundLinks
- * @property-read \Illuminate\Database\Eloquent\Collection<int, PageScreenshot> $screenshots
+ * @property-read Collection<int, PageLink> $inboundLinks
+ * @property-read Collection<int, PageLink> $outboundLinks
+ * @property-read Collection<int, PageScreenshot> $screenshots
  * @property-read Product|null $product
  * @property-read Article|null $article
  * @property-read Contact|null $contact
@@ -73,9 +81,15 @@ class Page extends Model
         'depth',
         'inbound_links_count',
         'last_crawled_at',
+        'recap_generated_at',
+        'embedding_generated_at',
         'processing_started_at',
         'raw_html',
         'content_with_tags_purified',
+        'is_product',
+        'is_product_available',
+        'product_type_id',
+        'product_type_detected_at',
         'embedding',
     ];
 
@@ -92,7 +106,13 @@ class Page extends Model
             'depth' => 'integer',
             'inbound_links_count' => 'integer',
             'last_crawled_at' => 'datetime',
+            'recap_generated_at' => 'datetime',
+            'embedding_generated_at' => 'datetime',
             'processing_started_at' => 'datetime',
+            'is_product' => 'boolean',
+            'is_product_available' => 'boolean',
+            'product_type_id' => 'integer',
+            'product_type_detected_at' => 'datetime',
             'embedding' => 'array',
         ];
     }
@@ -244,7 +264,7 @@ class Page extends Model
             $q->whereNull('last_crawled_at')
                 // Pages that meet the recrawl criteria
                 ->orWhereRaw(
-                    "EXTRACT(EPOCH FROM (NOW() - last_crawled_at)) / 3600 - (inbound_links_count * ?) > ? 
+                    "EXTRACT(EPOCH FROM (NOW() - last_crawled_at)) / 3600 - (inbound_links_count * ?) > ?
                      AND last_crawled_at < ?",
                     [$hoursPerLink, $maxIntervalHours, $minIntervalTimestamp]
                 );
@@ -301,7 +321,7 @@ class Page extends Model
     /**
      * Get the next scheduled crawl time for this page.
      */
-    public function getNextCrawlTime(): ?\Carbon\Carbon
+    public function getNextCrawlTime(): ?Carbon
     {
         if ($this->last_crawled_at === null) {
             return now(); // Crawl ASAP
@@ -333,7 +353,7 @@ class Page extends Model
      * Find similar pages using vector similarity search.
      *
      * @param int $limit
-     * @return \Illuminate\Database\Eloquent\Collection<int, Page>
+     * @return Collection<int, Page>
      */
     public function findSimilar(int $limit = 10)
     {

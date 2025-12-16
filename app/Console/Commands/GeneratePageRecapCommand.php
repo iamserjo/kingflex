@@ -136,13 +136,16 @@ class GeneratePageRecapCommand extends Command
 
     /**
      * Get the next page that needs recap generation.
+     * Orders by last_crawled_at to process recently fetched pages first.
      */
     private function getNextPage(int $afterId, ?string $domain): ?Page
     {
         $query = Page::query()
             ->where('id', '>', $afterId)
             ->whereNotNull('content_with_tags_purified')
+            ->whereNotNull('last_crawled_at')
             ->whereNull('recap_content')
+            ->orderBy('last_crawled_at', 'desc')
             ->orderBy('id');
 
         if ($domain) {
@@ -207,7 +210,10 @@ class GeneratePageRecapCommand extends Command
             }
 
             // Save recap
-            $page->update(['recap_content' => $recap]);
+            $page->update([
+                'recap_content' => $recap,
+                'recap_generated_at' => now(),
+            ]);
 
             $this->info("   ✅ Recap generated (" . strlen($recap) . " chars)");
 

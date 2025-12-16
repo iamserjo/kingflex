@@ -57,11 +57,33 @@ class OpenRouterService
     /**
      * Send a chat completion request.
      *
-     * @param array<array{role: string, content: string|array}> $messages
+     * @param array<int, array<string, mixed>> $messages
      * @param array<string, mixed> $options Additional options
      * @return array{content: string, usage: array, model: string}|null
      */
     public function chat(array $messages, array $options = []): ?array
+    {
+        $raw = $this->chatRaw($messages, $options);
+
+        if ($raw === null || isset($raw['error'])) {
+            return null;
+        }
+
+        return [
+            'content' => (string) ($raw['message']['content'] ?? ''),
+            'usage' => $raw['usage'] ?? [],
+            'model' => $raw['model'] ?? ($options['model'] ?? $this->chatModel),
+        ];
+    }
+
+    /**
+     * Send a chat completion request and return raw assistant message (including tool_calls).
+     *
+     * @param array<int, array<string, mixed>> $messages
+     * @param array<string, mixed> $options Additional options
+     * @return array{message: array<string, mixed>, usage: array<string, mixed>, model: string, raw: array<string, mixed>, error?: array{status: int|null, message: string, body: string|null}}|null
+     */
+    public function chatRaw(array $messages, array $options = []): ?array
     {
         $model = $options['model'] ?? $this->chatModel;
 
@@ -87,34 +109,125 @@ class OpenRouterService
                 $requestBody['response_format'] = $options['response_format'];
             }
 
+            // Tools (function calling)
+            if (!empty($options['tools'])) {
+                $requestBody['tools'] = $options['tools'];
+            }
+            if (array_key_exists('tool_choice', $options)) {
+                $requestBody['tool_choice'] = $options['tool_choice'];
+            }
+
             $response = $this->client()->post('/chat/completions', $requestBody);
+
+            $data = $response->json();
+
+            // OpenRouter may return 200 with error body
+            if (is_array($data) && isset($data['error'])) {
+                Log::error('❌ OpenRouter API error (body)', [
+                    'error' => $data['error'],
+                    'model' => $model,
+                ]);
+
+                $errorMessage = is_string($data['error'])
+                    ? $data['error']
+                    : (json_encode($data['error'], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: 'OpenRouter error');
+
+                return [
+                    'message' => [],
+                    'usage' => (array) ($data['usage'] ?? []),
+                    'model' => (string) ($data['model'] ?? $model),
+                    'raw' => (array) $data,
+                    'error' => [
+                        'status' => $response->status(),
+                        'message' => $errorMessage,
+                        'body' => $response->body(),
+                    ],
+                ];
+            }
 
             if (!$response->successful()) {
                 Log::error('❌ OpenRouter API error', [
                     'status' => $response->status(),
                     'body' => $response->body(),
                 ]);
-                return null;
+                return [
+                    'message' => [],
+                    'usage' => (array) ($data['usage'] ?? []),
+                    'model' => (string) ($data['model'] ?? $model),
+                    'raw' => is_array($data) ? (array) $data : [],
+                    'error' => [
+                        'status' => $response->status(),
+                        'message' => 'OpenRouter request failed',
+                        'body' => $response->body(),
+                    ],
+                ];
             }
-
-            $data = $response->json();
 
             Log::debug('📥 OpenRouter response received', [
                 'model' => $data['model'] ?? 'unknown',
                 'usage' => $data['usage'] ?? [],
+                'has_tool_calls' => !empty($data['choices'][0]['message']['tool_calls'] ?? null),
+            ]);
+
+            $choice0 = is_array($data) ? ($data['choices'][0] ?? null) : null;
+            if (is_array($choice0) && isset($choice0['error'])) {
+                $choiceError = $choice0['error'];
+                $choiceErrorMessage = is_string($choiceError)
+                    ? $choiceError
+                    : (json_encode($choiceError, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: 'OpenRouter choice error');
+
+                Log::error('❌ OpenRouter choice error', [
+                    'model' => $model,
+                    'error' => $choiceError,
+                ]);
+
+                return [
+                    'message' => [],
+                    'usage' => (array) ($data['usage'] ?? []),
+                    'model' => (string) ($data['model'] ?? $model),
+                    'raw' => (array) $data,
+                    'error' => [
+                        'status' => is_array($choiceError) ? ($choiceError['code'] ?? null) : null,
+                        'message' => $choiceErrorMessage,
+                        'body' => $response->body(),
+                    ],
+                ];
+            }
+
+            $message = (array) ($data['choices'][0]['message'] ?? []);
+
+            return [
+                'message' => $message,
+                'usage' => (array) ($data['usage'] ?? []),
+                'model' => (string) ($data['model'] ?? $model),
+                'raw' => (array) $data,
+            ];
+        } catch (\Throwable $e) {
+            $status = null;
+            $body = null;
+
+            if ($e instanceof \Illuminate\Http\Client\RequestException) {
+                $status = $e->response?->status();
+                $body = $e->response?->body();
+            }
+
+            Log::error('❌ OpenRouter exception', [
+                'message' => $e->getMessage(),
+                'status' => $status,
+                'body' => $body,
             ]);
 
             return [
-                'content' => $data['choices'][0]['message']['content'] ?? '',
-                'usage' => $data['usage'] ?? [],
-                'model' => $data['model'] ?? $model,
+                'message' => [],
+                'usage' => [],
+                'model' => $model,
+                'raw' => [],
+                'error' => [
+                    'status' => $status,
+                    'message' => $e->getMessage(),
+                    'body' => $body,
+                ],
             ];
-        } catch (\Exception $e) {
-            Log::error('❌ OpenRouter exception', [
-                'message' => $e->getMessage(),
-                'trace' => $e->getTraceAsString(),
-            ]);
-            return null;
         }
     }
 

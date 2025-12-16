@@ -126,13 +126,16 @@ class GeneratePageEmbeddingCommand extends Command
 
     /**
      * Get the next page that needs embedding generation.
+     * Orders by recap_generated_at to process recently generated recaps first.
      */
     private function getNextPage(int $afterId, ?string $domain): ?Page
     {
         $query = Page::query()
             ->where('id', '>', $afterId)
             ->whereNotNull('recap_content')
+            ->whereNotNull('recap_generated_at')
             ->whereNull('embedding')
+            ->orderBy('recap_generated_at', 'desc')
             ->orderBy('id');
 
         if ($domain) {
@@ -189,7 +192,11 @@ class GeneratePageEmbeddingCommand extends Command
 
             // Save embedding using raw SQL for pgvector
             $embeddingString = '[' . implode(',', $embedding) . ']';
-            DB::statement('UPDATE pages SET embedding = ? WHERE id = ?', [$embeddingString, $page->id]);
+            DB::statement('UPDATE pages SET embedding = ?, embedding_generated_at = ? WHERE id = ?', [
+                $embeddingString,
+                now(),
+                $page->id
+            ]);
 
             $this->info("   ✅ Embedding generated (" . count($embedding) . " dimensions)");
 

@@ -49,14 +49,16 @@ class OllamaService
      *
      * @param array<array{role: string, content: string}> $messages
      * @param array<string, mixed> $options Additional options
-     * @return array{content: string, model: string}|null
+     * @return array{content: string, model: string, error?: array{url: string, path: string, status: int, body: string, message: string}}|null
      */
     public function chat(array $messages, array $options = []): ?array
     {
         $model = $options['model'] ?? $this->model;
+        $path = '/api/chat';
+        $url = $this->baseUrl . $path;
 
         Log::debug('📤 Sending request to Ollama', [
-            'url' => $this->baseUrl . '/api/chat',
+            'url' => $url,
             'model' => $model,
             'messages_count' => count($messages),
         ]);
@@ -72,14 +74,28 @@ class OllamaService
                 ],
             ];
 
-            $response = $this->client()->post('/api/chat', $requestBody);
+            $response = $this->client()->post($path, $requestBody);
 
             if (!$response->successful()) {
+                $errorBody = $response->body();
                 Log::error('❌ Ollama API error', [
+                    'url' => $url,
+                    'path' => $path,
                     'status' => $response->status(),
-                    'body' => $response->body(),
+                    'body' => $errorBody,
                 ]);
-                return null;
+                
+                return [
+                    'content' => '',
+                    'model' => $model,
+                    'error' => [
+                        'url' => $url,
+                        'path' => $path,
+                        'status' => $response->status(),
+                        'body' => substr($errorBody, 0, 500),
+                        'message' => 'HTTP ' . $response->status() . ' error',
+                    ],
+                ];
             }
 
             $data = $response->json();
@@ -98,10 +114,23 @@ class OllamaService
             ];
         } catch (\Exception $e) {
             Log::error('❌ Ollama exception', [
+                'url' => $url,
+                'path' => $path,
                 'message' => $e->getMessage(),
                 'trace' => $e->getTraceAsString(),
             ]);
-            return null;
+            
+            return [
+                'content' => '',
+                'model' => $model,
+                'error' => [
+                    'url' => $url,
+                    'path' => $path,
+                    'status' => 0,
+                    'body' => '',
+                    'message' => $e->getMessage(),
+                ],
+            ];
         }
     }
 
