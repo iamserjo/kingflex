@@ -169,12 +169,16 @@ final class ProductTypeDetectionCommand extends Command
             $systemPrompt = (string) view('ai-prompts.product-type-detection')->render();
 
             $parts = [];
-            $parts[] = "URL: {$page->url}";
+            $parts[] = "URL: " . $this->sanitizeUtf8($page->url);
             if (!empty($page->title)) {
-                $parts[] = "Title: {$page->title}";
+                $parts[] = "Title: " . $this->sanitizeUtf8($page->title);
             }
             $parts[] = "\n=== CONTENT_WITH_TAGS_PURIFIED ===";
-            $parts[] = substr($page->content_with_tags_purified, 0, 20000);
+            
+            // Sanitize content to remove malformed UTF-8 characters
+            $rawContent = substr($page->content_with_tags_purified, 0, 20000);
+            $sanitizedContent = $this->sanitizeUtf8($rawContent);
+            $parts[] = $sanitizedContent;
 
             $content = implode("\n", $parts);
 
@@ -315,6 +319,24 @@ final class ProductTypeDetectionCommand extends Command
         return false;
     }
 
+    /**
+     * Sanitize string to ensure valid UTF-8 encoding.
+     * Removes or replaces invalid UTF-8 sequences that would cause json_encode to fail.
+     */
+    private function sanitizeUtf8(string $text): string
+    {
+        // First attempt: convert encoding to fix malformed UTF-8
+        $sanitized = mb_convert_encoding($text, 'UTF-8', 'UTF-8');
+        
+        // Second attempt: use iconv with //IGNORE to remove invalid sequences
+        $sanitized = iconv('UTF-8', 'UTF-8//IGNORE', $sanitized);
+        
+        // Third attempt: remove null bytes and other control characters that might cause issues
+        $sanitized = preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/u', '', $sanitized);
+        
+        return $sanitized ?: '';
+    }
+
     private function sleepIfNeeded(int $sleepMs): void
     {
         if ($sleepMs <= 0) {
@@ -329,4 +351,8 @@ final class ProductTypeDetectionCommand extends Command
         $this->line(str_repeat($char, 60));
     }
 }
+
+
+
+
 
