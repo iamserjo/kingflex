@@ -24,7 +24,7 @@ class OllamaService
 
     public function __construct()
     {
-        $this->baseUrl = rtrim(config('ollama.base_url') ?? throw new \Exception('no url set'), '/');
+        $this->baseUrl = rtrim(config('ollama.base_url') ?? 'notseturl', '/');
         $this->model = config('ollama.model', 'mistral:latest');
         $this->timeout = (int) config('ollama.timeout', 120);
         $this->maxTokens = (int) config('ollama.max_tokens', 4096);
@@ -84,7 +84,7 @@ class OllamaService
                     'status' => $response->status(),
                     'body' => $errorBody,
                 ]);
-                
+
                 return [
                     'content' => '',
                     'model' => $model,
@@ -119,7 +119,7 @@ class OllamaService
                 'message' => $e->getMessage(),
                 'trace' => $e->getTraceAsString(),
             ]);
-            
+
             return [
                 'content' => '',
                 'model' => $model,
