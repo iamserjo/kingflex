@@ -6,18 +6,20 @@ namespace App\Console\Commands;
 
 use App\Models\Page;
 use App\Services\Json\JsonParserService;
-use App\Services\Ollama\OllamaService;
+use App\Services\LmStudioOpenApi\LmStudioOpenApiService;
 use App\Services\Redis\PageLockService;
 use App\Services\TypeStructure\TypeStructureService;
 use Illuminate\Console\Command;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
 
 /**
  * Detect whether a page is a product, whether it's available,
  * and map product_type to type_structures (product_type_id).
  *
- * Uses Ollama and retries until it gets valid JSON with required keys.
+ * Uses OpenAI-compatible API (LM Studio) with screenshots and retries
+ * until it gets valid JSON with required keys.
  */
 final class ProductTypeDetectionCommand extends Command
 {
@@ -29,12 +31,12 @@ final class ProductTypeDetectionCommand extends Command
                             {--max-attempts=0 : Max retry attempts per page (0 = unlimited)}
                             {--sleep-ms=0 : Sleep between retries in ms}';
 
-    protected $description = 'Detect is_product, availability, and product_type_id for pages using Ollama';
+    protected $description = 'Detect is_product, availability, and product_type_id for pages using screenshot + OpenAI-compatible API';
 
     private const string STAGE = 'product_type';
 
     public function __construct(
-        private readonly OllamaService $ollama,
+        private readonly LmStudioOpenApiService $openAi,
         private readonly PageLockService $lockService,
         private readonly JsonParserService $jsonParser,
         private readonly TypeStructureService $typeStructureService,
@@ -52,15 +54,14 @@ final class ProductTypeDetectionCommand extends Command
         $sleepMs = max(0, (int) $this->option('sleep-ms'));
 
         $this->logSeparator();
-        $this->info('🤖 PRODUCT TYPE DETECTION (Ollama)');
+        $this->info('🤖 PRODUCT TYPE DETECTION (Screenshot + OpenAI-compatible API)');
         $this->info("⏰ Started at: " . now()->format('Y-m-d H:i:s'));
-        $this->info("📡 Ollama: {$this->ollama->getBaseUrl()}");
-        $this->info("🧠 Model: {$this->ollama->getModel()}");
-        $this->info("🔒 SSL Verification: Disabled");
+        $this->info("📡 API: {$this->openAi->getBaseUrl()}");
+        $this->info("🧠 Model: {$this->openAi->getModel()}");
         $this->logSeparator();
 
-        if (!$this->ollama->isConfigured()) {
-            $this->error('❌ Ollama is not configured. Check OLLAMA_BASE_URL and OLLAMA_MODEL in .env');
+        if (!$this->openAi->isConfigured()) {
+            $this->error('❌ LM Studio OpenAPI is not configured. Check LM_STUDIO_OPENAPI_BASE_URL and LM_STUDIO_OPENAPI_MODEL in .env');
             return self::FAILURE;
         }
 
@@ -135,7 +136,7 @@ final class ProductTypeDetectionCommand extends Command
         /** @var Builder<Page> $query */
         $query = Page::query()
             ->where('id', '>', $afterId)
-            ->whereNotNull('content_with_tags_purified')
+            ->whereNotNull('screenshot_path')
             ->whereNotNull('last_crawled_at')
             ->orderBy('id');
 
@@ -155,14 +156,15 @@ final class ProductTypeDetectionCommand extends Command
         $this->info("🔄 Detecting product type: {$page->url}");
         $this->info("   Page ID: {$page->id}");
 
-        if (empty($page->content_with_tags_purified)) {
-            $this->warn('   ⚠️  content_with_tags_purified is empty; skipping');
-            return true;
+        if (empty($page->screenshot_path)) {
+            $this->warn('   ⚠️  screenshot_path is empty; skipping');
+            return false;
         }
 
         Log::info('🤖 [ProductTypeDetect] Starting', [
             'page_id' => $page->id,
             'url' => $page->url,
+            'screenshot_path' => $page->screenshot_path,
         ]);
 
         try {
@@ -173,20 +175,18 @@ final class ProductTypeDetectionCommand extends Command
             if (!empty($page->title)) {
                 $parts[] = "Title: " . $this->sanitizeUtf8($page->title);
             }
-            $parts[] = "\n=== CONTENT_WITH_TAGS_PURIFIED ===";
-            
-            // Sanitize content to remove malformed UTF-8 characters
-            $rawContent = substr($page->content_with_tags_purified, 0, 20000);
-            $sanitizedContent = $this->sanitizeUtf8($rawContent);
-            $parts[] = $sanitizedContent;
-
             $content = implode("\n", $parts);
+            $this->info('   📝 Context length (text only): ' . strlen($content) . ' chars');
 
-            if (strlen($content) > 50000) {
-                $content = substr($content, 0, 50000) . "\n... [truncated]";
+            $imageDataUrl = $this->getScreenshotDataUrl($page);
+            if ($imageDataUrl === null) {
+                $this->warn('   ⚠️  Screenshot file does not exist; skipping');
+                Log::warning('🤖 [ProductTypeDetect] Screenshot missing on disk', [
+                    'page_id' => $page->id,
+                    'screenshot_path' => $page->screenshot_path,
+                ]);
+                return false;
             }
-
-            $this->info('   📝 Content length: ' . strlen($content) . ' chars');
 
             $requiredKeys = ['is_product', 'is_product_available', 'product_type'];
 
@@ -205,10 +205,12 @@ final class ProductTypeDetectionCommand extends Command
 
                 $this->line("   🤖 Attempt #{$attempt}...");
 
-                $response = $this->ollama->chat([
-                    ['role' => 'system', 'content' => $systemPrompt],
-                    ['role' => 'user', 'content' => $content],
-                ]);
+                $response = $this->openAi->chatWithImage(
+                    systemPrompt: $systemPrompt,
+                    userText: $content,
+                    imageDataUrl: $imageDataUrl,
+                    options: [],
+                );
 
                 if ($response === null || empty($response['content'])) {
                     $logContext = [
@@ -231,10 +233,10 @@ final class ProductTypeDetectionCommand extends Command
                             $this->warn("   📄 Response: " . substr($error['body'], 0, 200));
                         }
                     } else {
-                        $this->warn('   ⚠️  Empty response from Ollama');
+                        $this->warn('   ⚠️  Empty response from API');
                     }
 
-                    Log::warning('🤖 [ProductTypeDetect] Ollama returned empty response', $logContext);
+                    Log::warning('🤖 [ProductTypeDetect] API returned empty response', $logContext);
                     $this->warn('   🔄 Retrying...');
                     $this->sleepIfNeeded($sleepMs);
                     continue;
@@ -346,11 +348,58 @@ final class ProductTypeDetectionCommand extends Command
         usleep($sleepMs * 1000);
     }
 
+    /**
+     * Resolve screenshot_path to a data URL suitable for OpenAI-compatible image_url payload.
+     *
+     * Supports:
+     * - Storage disk "local" (may be rooted at storage/app/private)
+     * - Legacy Stage 1 path under storage/app/
+     * - Absolute paths (if screenshot_path was saved as full path)
+     */
+    private function getScreenshotDataUrl(Page $page): ?string
+    {
+        $path = (string) ($page->screenshot_path ?? '');
+        if ($path === '') {
+            return null;
+        }
+
+        $extension = strtolower(pathinfo($path, PATHINFO_EXTENSION));
+        $mime = in_array($extension, ['jpg', 'jpeg'], true) ? 'image/jpeg' : 'image/png';
+
+        // 1) Preferred: Laravel local disk
+        if (Storage::disk('local')->exists($path)) {
+            $binary = Storage::disk('local')->get($path);
+            return "data:{$mime};base64," . base64_encode($binary);
+        }
+
+        // 2) Stage 1 currently stores under storage/app/{relative}
+        $legacyFullPath = storage_path('app/' . ltrim($path, '/'));
+        if (file_exists($legacyFullPath)) {
+            $binary = file_get_contents($legacyFullPath);
+            if ($binary === false) {
+                return null;
+            }
+            return "data:{$mime};base64," . base64_encode($binary);
+        }
+
+        // 3) Absolute path stored in DB
+        if (str_starts_with($path, '/') && file_exists($path)) {
+            $binary = file_get_contents($path);
+            if ($binary === false) {
+                return null;
+            }
+            return "data:{$mime};base64," . base64_encode($binary);
+        }
+
+        return null;
+    }
+
     private function logSeparator(string $char = '═'): void
     {
         $this->line(str_repeat($char, 60));
     }
 }
+
 
 
 

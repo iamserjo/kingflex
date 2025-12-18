@@ -3,10 +3,11 @@
 use App\Models\Domain;
 use App\Models\Page;
 use App\Models\TypeStructure;
-use App\Services\Ollama\OllamaService;
+use App\Services\LmStudioOpenApi\LmStudioOpenApiService;
 use App\Services\Redis\PageLockService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\Storage;
 
 uses(RefreshDatabase::class);
 
@@ -19,30 +20,34 @@ beforeEach(function () {
 });
 
 test('command retries until it gets valid JSON and stores only is_product when is_product=false', function () {
+    Storage::fake('local');
+
     $domain = Domain::query()->create([
         'domain' => 'example.test',
         'is_active' => true,
     ]);
 
+    Storage::disk('local')->put('screenshots/test/not-a-product.png', 'fake-image-bytes');
+
     $page = Page::query()->create([
         'domain_id' => $domain->id,
         'url' => 'https://example.test/not-a-product',
         'title' => 'About us',
-        'content_with_tags_purified' => 'This is an informational page. Contact us.',
+        'screenshot_path' => 'screenshots/test/not-a-product.png',
         'last_crawled_at' => now(),
     ]);
 
-    $ollama = \Mockery::mock(OllamaService::class);
-    $ollama->shouldReceive('isConfigured')->andReturnTrue();
-    $ollama->shouldReceive('getBaseUrl')->andReturn('http://ollama.test');
-    $ollama->shouldReceive('getModel')->andReturn('test-model');
-    $ollama->shouldReceive('chat')
+    $openAi = \Mockery::mock(LmStudioOpenApiService::class);
+    $openAi->shouldReceive('isConfigured')->andReturnTrue();
+    $openAi->shouldReceive('getBaseUrl')->andReturn('http://lmstudio.test');
+    $openAi->shouldReceive('getModel')->andReturn('test-model');
+    $openAi->shouldReceive('chatWithImage')
         ->twice()
         ->andReturn(
             ['content' => 'not a json', 'model' => 'test-model'],
             ['content' => '{"is_product": false, "is_product_available": true, "product_type": "phone"}', 'model' => 'test-model'],
         );
-    app()->instance(OllamaService::class, $ollama);
+    app()->instance(LmStudioOpenApiService::class, $openAi);
 
     $exit = Artisan::call('page:product-type-detect', [
         '--limit' => 1,
@@ -60,6 +65,8 @@ test('command retries until it gets valid JSON and stores only is_product when i
 });
 
 test('command stores availability and product_type_id when is_product=true and type exists', function () {
+    Storage::fake('local');
+
     $domain = Domain::query()->create([
         'domain' => 'shop.test',
         'is_active' => true,
@@ -72,25 +79,27 @@ test('command stores availability and product_type_id when is_product=true and t
         'structure' => ['producer' => 'any'],
     ]);
 
+    Storage::disk('local')->put('screenshots/test/product.png', 'fake-image-bytes');
+
     $page = Page::query()->create([
         'domain_id' => $domain->id,
         'url' => 'https://shop.test/product/1',
         'title' => 'Super Phone',
-        'content_with_tags_purified' => 'Buy now. Available for purchase.',
+        'screenshot_path' => 'screenshots/test/product.png',
         'last_crawled_at' => now(),
     ]);
 
-    $ollama = \Mockery::mock(OllamaService::class);
-    $ollama->shouldReceive('isConfigured')->andReturnTrue();
-    $ollama->shouldReceive('getBaseUrl')->andReturn('http://ollama.test');
-    $ollama->shouldReceive('getModel')->andReturn('test-model');
-    $ollama->shouldReceive('chat')
+    $openAi = \Mockery::mock(LmStudioOpenApiService::class);
+    $openAi->shouldReceive('isConfigured')->andReturnTrue();
+    $openAi->shouldReceive('getBaseUrl')->andReturn('http://lmstudio.test');
+    $openAi->shouldReceive('getModel')->andReturn('test-model');
+    $openAi->shouldReceive('chatWithImage')
         ->once()
         ->andReturn([
             'content' => '{"is_product": true, "is_product_available": true, "product_type": "Phone"}',
             'model' => 'test-model',
         ]);
-    app()->instance(OllamaService::class, $ollama);
+    app()->instance(LmStudioOpenApiService::class, $openAi);
 
     $exit = Artisan::call('page:product-type-detect', [
         '--limit' => 1,
@@ -106,4 +115,5 @@ test('command stores availability and product_type_id when is_product=true and t
         ->and($page->product_type_id)->toBe($type->id)
         ->and($page->product_type_detected_at)->not->toBeNull();
 });
+
 
