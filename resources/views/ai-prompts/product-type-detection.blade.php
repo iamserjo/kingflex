@@ -14,3 +14,8 @@
   "product_type": "phone"
 }
 
+ВАЖНО:
+- product_type должен быть ОДНИМ значением (одной строкой), НЕ списком и НЕ строкой через разделители.
+- Выбирай строго одно значение из списка: phone, tablet, case, laptop, speaker.
+- НЕЛЬЗЯ возвращать: "phone|tablet|case" или "phone, tablet" и т.п.
+

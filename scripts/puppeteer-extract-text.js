@@ -58,7 +58,8 @@ if (!url) {
 
 const timeout = parseInt(getOption('timeout', '30000'), 10);
 const waitUntil = getOption('wait-for', 'networkidle');
-const userAgent = getOption('user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+const userAgentArg = args.find(a => a.startsWith('--user-agent='));
+const userAgent = userAgentArg ? userAgentArg.split('=')[1] : 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 const screenshotPath = getOption('screenshot-path', null);
 const screenshotFullPage = getOption('screenshot-full-page', '1') !== '0';
 const outputJson = hasFlag('json');
@@ -67,6 +68,13 @@ async function extractText() {
     let browser = null;
 
     try {
+        const MOBILE_USER_AGENT = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Mobile/15E148 Safari/604.1';
+        const MOBILE_VIEWPORT = { width: 390, height: 844 };
+        const DESKTOP_VIEWPORT = { width: 1920, height: 1080 };
+
+        const emulateMobile = Boolean(screenshotPath);
+        const effectiveUserAgent = (emulateMobile && !userAgentArg) ? MOBILE_USER_AGENT : userAgent;
+
         // Launch browser with appropriate flags for Docker/headless environment
         browser = await chromium.launch({
             headless: true,
@@ -81,8 +89,9 @@ async function extractText() {
         });
 
         const context = await browser.newContext({
-            userAgent: userAgent,
-            viewport: { width: 1920, height: 1080 },
+            userAgent: effectiveUserAgent,
+            viewport: emulateMobile ? MOBILE_VIEWPORT : DESKTOP_VIEWPORT,
+            ...(emulateMobile ? { deviceScaleFactor: 3, isMobile: true, hasTouch: true } : {}),
         });
 
         const page = await context.newPage();
@@ -118,6 +127,14 @@ async function extractText() {
         let screenshotError = null;
         if (screenshotPath) {
             try {
+                // Remove layout/marketing chrome before screenshot (requirements for page:extract)
+                await page.evaluate(() => {
+                    for (const el of document.querySelectorAll('header, footer, #top-banner')) {
+                        el.remove();
+                    }
+                });
+                await page.waitForTimeout(100);
+
                 await fs.mkdir(path.dirname(screenshotPath), { recursive: true });
                 await page.screenshot({ path: screenshotPath, fullPage: screenshotFullPage });
                 screenshotSaved = true;
@@ -245,6 +262,11 @@ async function extractText() {
                 }
 
                 const tagName = element.tagName;
+
+                // Skip top-banner by id (explicit requirement)
+                if (element.id === 'top-banner') {
+                    return '';
+                }
 
                 // Skip removed tags entirely
                 if (REMOVE_TAGS.has(tagName)) {

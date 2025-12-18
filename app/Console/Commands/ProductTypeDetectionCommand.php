@@ -141,7 +141,16 @@ final class ProductTypeDetectionCommand extends Command
             ->orderBy('id');
 
         if (!$force) {
-            $query->whereNull('product_type_detected_at');
+            // Default behavior: process new pages, PLUS backfill pages that were already detected
+            // but ended up with product_type_id = null (common when type mapping logic changed).
+            $query->where(function (Builder $q) {
+                $q->whereNull('product_type_detected_at')
+                    ->orWhere(function (Builder $q2) {
+                        $q2->where('is_product', true)
+                            ->whereNotNull('product_type_detected_at')
+                            ->whereNull('product_type_id');
+                    });
+            });
         }
 
         if ($domain) {
@@ -153,11 +162,14 @@ final class ProductTypeDetectionCommand extends Command
 
     private function processPage(Page $page, int $maxAttempts, int $sleepMs): bool
     {
+        $startedAt = microtime(true);
+
         $this->info("🔄 Detecting product type: {$page->url}");
         $this->info("   Page ID: {$page->id}");
 
         if (empty($page->screenshot_path)) {
             $this->warn('   ⚠️  screenshot_path is empty; skipping');
+            $this->line('   ⏱️  Took: ' . $this->formatSeconds(microtime(true) - $startedAt));
             return false;
         }
 
@@ -185,6 +197,7 @@ final class ProductTypeDetectionCommand extends Command
                     'page_id' => $page->id,
                     'screenshot_path' => $page->screenshot_path,
                 ]);
+                $this->line('   ⏱️  Took: ' . $this->formatSeconds(microtime(true) - $startedAt));
                 return false;
             }
 
@@ -274,13 +287,14 @@ final class ProductTypeDetectionCommand extends Command
                 } else {
                     $update['is_product_available'] = $isAvailable;
                     $update['product_type_id'] = $productType !== null
-                        ? $this->typeStructureService->findExistingId($productType)
+                        ? $this->resolveProductTypeId($productType, $page->id)
                         : null;
                 }
 
                 $page->update($update);
 
                 $this->info('   ✅ Detection saved');
+                $this->line('   ⏱️  Took: ' . $this->formatSeconds(microtime(true) - $startedAt));
 
                 Log::info('🤖 [ProductTypeDetect] ✅ Completed', [
                     'page_id' => $page->id,
@@ -288,19 +302,138 @@ final class ProductTypeDetectionCommand extends Command
                     'is_product_available' => $update['is_product_available'] ?? null,
                     'product_type_id' => $update['product_type_id'] ?? null,
                     'attempts' => $attempt,
+                    'took_seconds' => round(microtime(true) - $startedAt, 3),
                 ]);
 
                 return true;
             }
         } catch (\Throwable $e) {
             $this->error('   ❌ Exception: ' . $e->getMessage());
+            $this->line('   ⏱️  Took: ' . $this->formatSeconds(microtime(true) - $startedAt));
             Log::error('🤖 [ProductTypeDetect] Exception', [
                 'page_id' => $page->id,
                 'error' => $e->getMessage(),
                 'trace' => $e->getTraceAsString(),
+                'took_seconds' => round(microtime(true) - $startedAt, 3),
             ]);
             return false;
         }
+    }
+
+    /**
+     * Try to map AI product_type to an existing TypeStructure id.
+     *
+     * The AI may return a single value (ideal) or a delimited list like:
+     * - "phone|tablet|case"
+     * - "phone, tablet"
+     * - "тип: телефон"
+     *
+     * We try multiple candidates (in order) and return the first match.
+     */
+    private function resolveProductTypeId(string $productType, int $pageIdForLog): ?int
+    {
+        $candidates = $this->extractProductTypeCandidates($productType);
+
+        // 1) Prefer any existing match without creating new rows.
+        foreach ($candidates as $candidate) {
+            $id = $this->typeStructureService->findExistingId($candidate);
+            if ($id !== null) {
+                return $id;
+            }
+        }
+
+        // 2) If nothing matched, create a minimal type structure for the first candidate
+        // and attach it to the page.
+        $first = $candidates[0] ?? null;
+        if ($first === null || trim($first) === '') {
+            Log::warning('🤖 [ProductTypeDetect] Could not map product_type to type_structures (no candidates)', [
+                'page_id' => $pageIdForLog,
+                'product_type_raw' => $productType,
+            ]);
+            return null;
+        }
+
+        $createdId = $this->typeStructureService->findOrCreateId($first);
+        if ($createdId === null) {
+            Log::warning('🤖 [ProductTypeDetect] Could not create type_structures row for product_type', [
+                'page_id' => $pageIdForLog,
+                'product_type_raw' => $productType,
+                'candidate' => $first,
+            ]);
+            return null;
+        }
+
+        Log::info('🤖 [ProductTypeDetect] Created type_structures row for product_type', [
+            'page_id' => $pageIdForLog,
+            'product_type_raw' => $productType,
+            'candidate' => $first,
+            'product_type_id' => $createdId,
+        ]);
+
+        return $createdId;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function extractProductTypeCandidates(string $productType): array
+    {
+        $v = trim($productType);
+
+        // Remove common wrappers/quotes.
+        $v = trim($v, " \t\n\r\0\x0B\"'`");
+        $v = preg_replace('/\s+/u', ' ', $v) ?? $v;
+        $v = trim($v);
+
+        // Remove common prefixes like "type:" / "product type:" / "тип товара:".
+        $vNoPrefix = preg_replace('/^(?:product\s*type|type|тип\s*товара|тип)\s*[:\-]\s*/ui', '', $v) ?? $v;
+        $vNoPrefix = trim($vNoPrefix);
+
+        // Remove parenthesized clarifications: "phone (smartphone)" -> "phone"
+        $vNoParens = preg_replace('/\s*\(.*?\)\s*/u', ' ', $vNoPrefix) ?? $vNoPrefix;
+        $vNoParens = preg_replace('/\s+/u', ' ', $vNoParens) ?? $vNoParens;
+        $vNoParens = trim($vNoParens);
+
+        $base = $vNoParens !== '' ? $vNoParens : $vNoPrefix;
+        $base = trim($base);
+
+        // Split by common delimiters (but NOT by spaces).
+        $parts = preg_split('/\s*(?:\||,|;|\/|\\\\|\bor\b|\bили\b|\n)\s*/ui', $base, -1, PREG_SPLIT_NO_EMPTY);
+        if (!is_array($parts) || $parts === []) {
+            $parts = [$base];
+        }
+
+        $candidates = [];
+
+        // Try in this order:
+        // 1) each split part
+        // 2) full base (in case splitting was too aggressive)
+        foreach ($parts as $p) {
+            if (!is_string($p)) {
+                continue;
+            }
+            $p = trim($p, " \t\n\r\0\x0B\"'`");
+            $p = preg_replace('/\s+/u', ' ', $p) ?? $p;
+            $p = trim($p);
+            if ($p === '') {
+                continue;
+            }
+            $candidates[] = $p;
+        }
+
+        if ($base !== '' && !in_array($base, $candidates, true)) {
+            $candidates[] = $base;
+        }
+
+        // De-dup while preserving order.
+        $unique = [];
+        foreach ($candidates as $c) {
+            if (!in_array($c, $unique, true)) {
+                $unique[] = $c;
+            }
+        }
+
+        return $unique;
     }
 
     private function toBool(mixed $value): bool
@@ -348,6 +481,11 @@ final class ProductTypeDetectionCommand extends Command
         usleep($sleepMs * 1000);
     }
 
+    private function formatSeconds(float $seconds): string
+    {
+        return number_format(max(0.0, $seconds), 2) . 's';
+    }
+
     /**
      * Resolve screenshot_path to a data URL suitable for OpenAI-compatible image_url payload.
      *
@@ -363,13 +501,10 @@ final class ProductTypeDetectionCommand extends Command
             return null;
         }
 
-        $extension = strtolower(pathinfo($path, PATHINFO_EXTENSION));
-        $mime = in_array($extension, ['jpg', 'jpeg'], true) ? 'image/jpeg' : 'image/png';
-
         // 1) Preferred: Laravel local disk
         if (Storage::disk('local')->exists($path)) {
             $binary = Storage::disk('local')->get($path);
-            return "data:{$mime};base64," . base64_encode($binary);
+            return $this->toCroppedDataUrl($binary);
         }
 
         // 2) Stage 1 currently stores under storage/app/{relative}
@@ -379,7 +514,7 @@ final class ProductTypeDetectionCommand extends Command
             if ($binary === false) {
                 return null;
             }
-            return "data:{$mime};base64," . base64_encode($binary);
+            return $this->toCroppedDataUrl($binary);
         }
 
         // 3) Absolute path stored in DB
@@ -388,10 +523,125 @@ final class ProductTypeDetectionCommand extends Command
             if ($binary === false) {
                 return null;
             }
-            return "data:{$mime};base64," . base64_encode($binary);
+            return $this->toCroppedDataUrl($binary);
         }
 
         return null;
+    }
+
+    /**
+     * Convert screenshot bytes to a data URL after cropping to max 2000px height.
+     * This does NOT write anything to disk.
+     */
+    private function toCroppedDataUrl(string $binary): ?string
+    {
+        $imageInfo = @getimagesizefromstring($binary);
+        if ($imageInfo === false) {
+            return null;
+        }
+
+        $mime = (string) ($imageInfo['mime'] ?? '');
+        if (!in_array($mime, ['image/png', 'image/jpeg'], true)) {
+            return null;
+        }
+
+        // Crop for AI when GD is available:
+        // - keep from top (y=0)
+        // - crop to max height 1500px
+        //
+        // Important: do not require GD in runtime/tests. If GD is missing, fall back
+        // to original bytes (still useful for vision models).
+        if (!function_exists('imagecreatefromstring') || !function_exists('imagecreatetruecolor')) {
+            return "data:{$mime};base64," . base64_encode($binary);
+        }
+
+        $croppedBinary = $this->cropImageBinaryForAi($binary, $mime, 0, 3500);
+        if ($croppedBinary === null) {
+            $croppedBinary = $binary;
+        }
+
+        return "data:{$mime};base64," . base64_encode($croppedBinary);
+    }
+
+    /**
+     * Crop image to a specific viewport and return encoded bytes.
+     *
+     * Rules:
+     * - If image is too short to remove $topCropPx: return original bytes (don't fail).
+     * - If resulting crop equals original (no crop): return original bytes (avoid re-encode).
+     * - Otherwise crop from Y=$topCropPx and keep up to $targetHeightPx.
+     */
+    private function cropImageBinaryForAi(string $binary, string $mime, int $topCropPx, int $targetHeightPx): ?string
+    {
+        $source = @imagecreatefromstring($binary);
+        if ($source === false) {
+            return null;
+        }
+
+        $width = imagesx($source);
+        $height = imagesy($source);
+
+        $topCropPx = max(0, $topCropPx);
+        $targetHeightPx = max(1, $targetHeightPx);
+
+        // Not enough height to remove the header area - keep original
+        if ($height <= $topCropPx) {
+            imagedestroy($source);
+            return $binary;
+        }
+
+        $startY = $topCropPx;
+        $cropHeight = min($targetHeightPx, $height - $startY);
+        if ($cropHeight <= 0) {
+            imagedestroy($source);
+            return $binary;
+        }
+
+        // No-op crop (keep original bytes)
+        if ($startY === 0 && $cropHeight === $height) {
+            imagedestroy($source);
+            return $binary;
+        }
+
+        $cropped = imagecreatetruecolor($width, $cropHeight);
+        if ($cropped === false) {
+            imagedestroy($source);
+            return null;
+        }
+
+        // Preserve transparency for PNG
+        if ($mime === 'image/png') {
+            imagealphablending($cropped, false);
+            imagesavealpha($cropped, true);
+            $transparent = imagecolorallocatealpha($cropped, 0, 0, 0, 127);
+            imagefilledrectangle($cropped, 0, 0, $width, $cropHeight, $transparent);
+        }
+
+        // Crop: copy from (0, startY) to (0, 0)
+        imagecopy($cropped, $source, 0, 0, 0, $startY, $width, $cropHeight);
+        imagedestroy($source);
+
+        $obLevel = ob_get_level();
+        ob_start();
+        try {
+            if ($mime === 'image/jpeg') {
+                imagejpeg($cropped, null, 85);
+            } else {
+                imagepng($cropped);
+            }
+            $out = ob_get_clean();
+        } finally {
+            imagedestroy($cropped);
+            while (ob_get_level() > $obLevel) {
+                @ob_end_clean();
+            }
+        }
+
+        if (!is_string($out) || $out === '') {
+            return null;
+        }
+
+        return $out;
     }
 
     private function logSeparator(string $char = '═'): void
