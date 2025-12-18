@@ -11,6 +11,8 @@ use App\Services\Redis\PageLockService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 
 /**
  * Stage 1: Extract content from pages using Playwright.
@@ -133,7 +135,8 @@ class ExtractPageContentCommand extends Command
             ->whereNull('recap_content')
             ->where(function ($q) {
                 $q->whereNull('raw_html')
-                    ->orWhereNull('content_with_tags_purified');
+                    ->orWhereNull('content_with_tags_purified')
+                    ->orWhereNull('screenshot_path');
             })
             ->orderBy('id');
 
@@ -160,8 +163,26 @@ class ExtractPageContentCommand extends Command
         ]);
 
         try {
+            $screenshotsBase = trim((string) config('crawler.screenshots_path', 'screenshots'), '/');
+            $screenshotRelativePath = null;
+            $screenshotAbsolutePath = null;
+
+            // Always attempt full-page screenshot for Stage 1 (requirement)
+            if ($screenshotsBase !== '') {
+                $timestamp = now()->format('Ymd_His');
+                $token = Str::uuid()->toString();
+                $screenshotRelativePath = "{$screenshotsBase}/stage1/{$page->id}-{$timestamp}-{$token}.png";
+                $screenshotAbsolutePath = storage_path('app/' . $screenshotRelativePath);
+                Storage::disk('local')->makeDirectory(dirname($screenshotRelativePath));
+            }
+
             // Extract content with Playwright
-            $extractResult = $this->contentExtractor->extract($page->url, $timeout);
+            $extractResult = $this->contentExtractor->extract(
+                url: $page->url,
+                timeout: $timeout,
+                screenshotAbsolutePath: $screenshotAbsolutePath,
+                screenshotFullPage: true,
+            );
 
             if (!$extractResult['success']) {
                 $this->error("   ❌ Failed to extract: " . ($extractResult['error'] ?? 'Unknown error'));
@@ -183,6 +204,18 @@ class ExtractPageContentCommand extends Command
                 'last_crawled_at' => now(),
             ];
 
+            // Persist screenshot path if it was saved
+            if (($extractResult['screenshotSaved'] ?? false) === true && $screenshotRelativePath !== null) {
+                $updateData['screenshot_path'] = $screenshotRelativePath;
+                $updateData['screenshot_taken_at'] = now();
+            } elseif (!empty($extractResult['screenshotError'])) {
+                Log::warning('🌐 [Stage1:Extract] Screenshot capture failed', [
+                    'page_id' => $page->id,
+                    'url' => $page->url,
+                    'error' => $extractResult['screenshotError'],
+                ]);
+            }
+
             // Parse and save keywords if available
             if (!empty($extractResult['keywords'])) {
                 $keywords = array_map('trim', explode(',', $extractResult['keywords']));
@@ -202,6 +235,7 @@ class ExtractPageContentCommand extends Command
                 'has_title' => !empty($extractResult['title']),
                 'has_description' => !empty($extractResult['description']),
                 'has_keywords' => !empty($extractResult['keywords']),
+                'screenshot_saved' => ($extractResult['screenshotSaved'] ?? false) === true,
             ]);
 
             // Extract and save new URLs

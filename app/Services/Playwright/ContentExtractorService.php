@@ -29,12 +29,29 @@ class ContentExtractorService
      * @param string $url The URL to extract content from
      * @param int $timeout Page load timeout in milliseconds
      * @param string $waitFor Wait until event (load, domcontentloaded, networkidle, commit)
-     * @return array{success: bool, content: ?string, rawHtml: ?string, title: ?string, description: ?string, keywords: ?string, extractedUrls: ?array, error: ?string, loadTimeMs: ?int}
+     * @param string|null $screenshotAbsolutePath Absolute path where Playwright should save a screenshot (optional)
+     * @param bool $screenshotFullPage Whether to capture a full page screenshot (default true)
+     * @return array{
+     *   success: bool,
+     *   content: ?string,
+     *   rawHtml: ?string,
+     *   title: ?string,
+     *   description: ?string,
+     *   keywords: ?string,
+     *   extractedUrls: ?array,
+     *   screenshotPath: ?string,
+     *   screenshotSaved: ?bool,
+     *   screenshotError: ?string,
+     *   error: ?string,
+     *   loadTimeMs: ?int
+     * }
      */
     public function extract(
         string $url,
         int $timeout = self::DEFAULT_TIMEOUT,
         string $waitFor = self::DEFAULT_WAIT_FOR,
+        ?string $screenshotAbsolutePath = null,
+        bool $screenshotFullPage = true,
     ): array {
         $startTime = microtime(true);
 
@@ -42,6 +59,7 @@ class ContentExtractorService
             'url' => $url,
             'timeout' => $timeout,
             'waitFor' => $waitFor,
+            'screenshot' => $screenshotAbsolutePath !== null,
         ]);
 
         $scriptPath = base_path('scripts/puppeteer-extract-text.js');
@@ -59,6 +77,9 @@ class ContentExtractorService
                 'description' => null,
                 'keywords' => null,
                 'extractedUrls' => null,
+                'screenshotPath' => null,
+                'screenshotSaved' => null,
+                'screenshotError' => null,
                 'error' => 'Playwright script not found',
                 'loadTimeMs' => null,
             ];
@@ -72,6 +93,11 @@ class ContentExtractorService
             "--wait-for={$waitFor}",
             '--json',
         ];
+
+        if ($screenshotAbsolutePath !== null) {
+            $args[] = "--screenshot-path={$screenshotAbsolutePath}";
+            $args[] = '--screenshot-full-page=' . ($screenshotFullPage ? '1' : '0');
+        }
 
         Log::debug('🎭 [Playwright] Executing node process', [
             'url' => $url,
@@ -111,6 +137,9 @@ class ContentExtractorService
                     'description' => null,
                     'keywords' => null,
                     'extractedUrls' => null,
+                    'screenshotPath' => null,
+                    'screenshotSaved' => null,
+                    'screenshotError' => null,
                     'error' => $errorOutput ?: 'Process failed with exit code ' . $exitCode,
                     'loadTimeMs' => null,
                 ];
@@ -147,6 +176,9 @@ class ContentExtractorService
                     'description' => null,
                     'keywords' => null,
                     'extractedUrls' => null,
+                    'screenshotPath' => null,
+                    'screenshotSaved' => null,
+                    'screenshotError' => null,
                     'error' => 'Failed to parse JSON output: ' . json_last_error_msg(),
                     'loadTimeMs' => null,
                 ];
@@ -169,6 +201,9 @@ class ContentExtractorService
                     'description' => null,
                     'keywords' => null,
                     'extractedUrls' => null,
+                    'screenshotPath' => null,
+                    'screenshotSaved' => null,
+                    'screenshotError' => null,
                     'error' => $data['error'],
                     'loadTimeMs' => null,
                 ];
@@ -177,6 +212,8 @@ class ContentExtractorService
             $contentLength = $data['contentLength'] ?? strlen($data['content'] ?? '');
             $pageLoadTime = $data['loadTimeMs'] ?? null;
             $totalTime = round((microtime(true) - $startTime) * 1000);
+            $screenshotSaved = $data['screenshotSaved'] ?? null;
+            $screenshotError = $data['screenshotError'] ?? null;
 
             Log::info('🎭 [Playwright] ✅ Content extracted successfully', [
                 'url' => $url,
@@ -189,6 +226,7 @@ class ContentExtractorService
                 'pageLoadTimeMs' => $pageLoadTime,
                 'totalProcessTimeMs' => $totalTime,
                 'status' => $data['status'] ?? null,
+                'screenshotSaved' => $screenshotSaved,
             ]);
 
             return [
@@ -199,6 +237,9 @@ class ContentExtractorService
                 'description' => $data['metaDescription'] ?? null,
                 'keywords' => $data['metaKeywords'] ?? null,
                 'extractedUrls' => $data['extractedUrls'] ?? [],
+                'screenshotPath' => $data['screenshotPath'] ?? null,
+                'screenshotSaved' => $screenshotSaved,
+                'screenshotError' => $screenshotError,
                 'error' => null,
                 'loadTimeMs' => $pageLoadTime,
             ];
@@ -222,6 +263,9 @@ class ContentExtractorService
                 'description' => null,
                 'keywords' => null,
                 'extractedUrls' => null,
+                'screenshotPath' => null,
+                'screenshotSaved' => null,
+                'screenshotError' => null,
                 'error' => $e->getMessage(),
                 'loadTimeMs' => null,
             ];

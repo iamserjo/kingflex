@@ -34,6 +34,8 @@ use Illuminate\Database\Eloquent\Relations\HasOne;
  * @property Carbon|null $processing_started_at Processing lock timestamp
  * @property string|null $raw_html
  * @property string|null $content_with_tags_purified Rendered content with semantic HTML tags
+ * @property string|null $screenshot_path Local storage path (storage/app/...) to latest full-page screenshot
+ * @property Carbon|null $screenshot_taken_at Timestamp when screenshot_path was captured
  * @property bool|null $is_product
  * @property bool|null $is_product_available
  * @property int|null $product_type_id
@@ -86,6 +88,8 @@ class Page extends Model
         'processing_started_at',
         'raw_html',
         'content_with_tags_purified',
+        'screenshot_path',
+        'screenshot_taken_at',
         'is_product',
         'is_product_available',
         'product_type_id',
@@ -106,6 +110,7 @@ class Page extends Model
             'depth' => 'integer',
             'inbound_links_count' => 'integer',
             'last_crawled_at' => 'datetime',
+            'screenshot_taken_at' => 'datetime',
             'recap_generated_at' => 'datetime',
             'embedding_generated_at' => 'datetime',
             'processing_started_at' => 'datetime',

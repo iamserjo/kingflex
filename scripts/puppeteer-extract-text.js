@@ -11,10 +11,14 @@
  *   --timeout=<ms>       Page load timeout in milliseconds (default: 30000)
  *   --wait-for=<event>   Wait until event: load, domcontentloaded, networkidle, commit
  *   --user-agent=<ua>    Custom user agent string
+ *   --screenshot-path=<path>  Save full page screenshot to this absolute path
+ *   --screenshot-full-page=<0|1>  Capture full page (default: 1)
  *   --json               Output as JSON with metadata
  */
 
 import { chromium } from 'playwright';
+import fs from 'node:fs/promises';
+import path from 'node:path';
 
 const args = process.argv.slice(2);
 
@@ -26,6 +30,8 @@ Options:
   --timeout=<ms>       Page load timeout in milliseconds (default: 30000)
   --wait-for=<event>   Wait until event: load, domcontentloaded, networkidle, commit
   --user-agent=<ua>    Custom user agent string
+  --screenshot-path=<path>  Save full page screenshot to this absolute path
+  --screenshot-full-page=<0|1>  Capture full page (default: 1)
   --json               Output as JSON with metadata
   --help, -h           Show this help message
 
@@ -53,6 +59,8 @@ if (!url) {
 const timeout = parseInt(getOption('timeout', '30000'), 10);
 const waitUntil = getOption('wait-for', 'networkidle');
 const userAgent = getOption('user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+const screenshotPath = getOption('screenshot-path', null);
+const screenshotFullPage = getOption('screenshot-full-page', '1') !== '0';
 const outputJson = hasFlag('json');
 
 async function extractText() {
@@ -104,6 +112,19 @@ async function extractText() {
 
         // Extract raw HTML
         const rawHtml = await page.content();
+
+        // Take screenshot (optional). Never fail extraction because of screenshot issues.
+        let screenshotSaved = false;
+        let screenshotError = null;
+        if (screenshotPath) {
+            try {
+                await fs.mkdir(path.dirname(screenshotPath), { recursive: true });
+                await page.screenshot({ path: screenshotPath, fullPage: screenshotFullPage });
+                screenshotSaved = true;
+            } catch (e) {
+                screenshotError = e?.message || String(e);
+            }
+        }
 
         // Extract all links from the page
         const extractedUrls = await page.evaluate(() => {
@@ -376,6 +397,9 @@ async function extractText() {
                 loadTimeMs: loadTime,
                 contentLength: cleanedHtml.length,
                 rawHtmlLength: rawHtml.length,
+                screenshotPath: screenshotPath,
+                screenshotSaved: screenshotSaved,
+                screenshotError: screenshotError,
                 content: cleanedHtml,
                 rawHtml: rawHtml,
                 extractedUrls: extractedUrls,
@@ -391,6 +415,12 @@ async function extractText() {
             }
             console.log(`Load time: ${loadTime}ms`);
             console.log(`Content length: ${cleanedHtml.length} characters`);
+            if (screenshotPath) {
+                console.log(`Screenshot: ${screenshotSaved ? 'saved' : 'failed'} (${screenshotPath})`);
+                if (screenshotError) {
+                    console.log(`Screenshot error: ${screenshotError}`);
+                }
+            }
             console.log('═'.repeat(60));
             console.log('');
             console.log(cleanedHtml);
