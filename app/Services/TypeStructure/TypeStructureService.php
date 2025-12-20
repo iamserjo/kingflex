@@ -218,6 +218,28 @@ final class TypeStructureService
         $tags = $this->extractTags($result, $normalized);
         $structure = $this->extractStructure($result);
 
+        // Avoid duplicates: if the AI produced tags that match an existing type, reuse it.
+        $existingByTags = $this->findBestExistingByTags($tags);
+        if ($existingByTags !== null) {
+            // Merge tags (keep existing structure unless it's empty and AI provided something).
+            $mergedTags = $this->normalizeTags(array_merge((array) ($existingByTags->tags ?? []), $tags), $existingByTags->type_normalized);
+
+            $update = ['tags' => $mergedTags];
+            $existingStructure = (array) ($existingByTags->structure ?? []);
+            if ($existingStructure === [] && $structure !== []) {
+                $update['structure'] = $structure;
+            }
+
+            $existingByTags->update($update);
+
+            return [
+                'type' => $existingByTags->type,
+                'structure' => (array) ($existingByTags->structure ?? []),
+                'tags' => $mergedTags,
+                'source' => 'db',
+            ];
+        }
+
         TypeStructure::query()->updateOrCreate(
             ['type_normalized' => $normalized],
             [
@@ -233,6 +255,60 @@ final class TypeStructureService
             'tags' => $tags,
             'source' => 'ai',
         ];
+    }
+
+    /**
+     * Find an existing type structure by candidate tags.
+     *
+     * Preference order:
+     * - any candidate tag equals an existing type_normalized (strong signal)
+     * - otherwise, any overlap via tags JSON containment
+     */
+    private function findBestExistingByTags(array $candidateTags): ?TypeStructure
+    {
+        $candidateTags = array_values(array_filter($candidateTags, fn ($t) => is_string($t) && trim($t) !== ''));
+        $candidateTags = array_slice($candidateTags, 0, self::TAGS_LIMIT);
+
+        if ($candidateTags === []) {
+            return null;
+        }
+
+        $query = TypeStructure::query()->whereIn('type_normalized', $candidateTags);
+        $query->orWhere(function ($q) use ($candidateTags) {
+            foreach ($candidateTags as $t) {
+                $q->orWhereJsonContains('tags', $t);
+            }
+        });
+
+        $rows = $query->get();
+        if ($rows->isEmpty()) {
+            return null;
+        }
+
+        // Score by overlap count between candidate tags and (row tags + type_normalized).
+        $best = null;
+        $bestScore = -1;
+
+        foreach ($rows as $row) {
+            $rowTags = (array) ($row->tags ?? []);
+            $rowTags[] = (string) $row->type_normalized;
+            $rowTags = array_values(array_unique(array_filter($rowTags, fn ($t) => is_string($t) && $t !== '')));
+
+            $overlap = array_intersect($candidateTags, $rowTags);
+            $score = count($overlap);
+
+            // Strong bonus if we matched canonical type by type_normalized in candidateTags.
+            if (in_array((string) $row->type_normalized, $candidateTags, true)) {
+                $score += 100;
+            }
+
+            if ($score > $bestScore) {
+                $bestScore = $score;
+                $best = $row;
+            }
+        }
+
+        return $best;
     }
 
     /**
