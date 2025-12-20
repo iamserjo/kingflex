@@ -363,7 +363,7 @@ final class ProductTypeDetectionCommand extends Command
             return null;
         }
 
-        Log::info('🤖 [ProductTypeDetect] Created type_structures row for product_type', [
+        Log::info('🤖 [ProductTypeDetect] Ensured type_structures row for product_type', [
             'page_id' => $pageIdForLog,
             'product_type_raw' => $productType,
             'candidate' => $first,
@@ -649,6 +649,9 @@ final class ProductTypeDetectionCommand extends Command
         $this->line(str_repeat($char, 60));
     }
 }
+
+
+
 
 
 

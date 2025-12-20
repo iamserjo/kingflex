@@ -4,6 +4,7 @@ use App\Models\Domain;
 use App\Models\Page;
 use App\Models\TypeStructure;
 use App\Services\LmStudioOpenApi\LmStudioOpenApiService;
+use App\Services\OpenRouter\OpenRouterService;
 use App\Services\Redis\PageLockService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Artisan;
@@ -183,6 +184,17 @@ test('command creates a new type and attaches it when product_type does not exis
         'is_active' => true,
     ]);
 
+    $openRouter = \Mockery::mock(OpenRouterService::class);
+    $openRouter->shouldReceive('isConfigured')->andReturnTrue();
+    $openRouter->shouldReceive('chatJson')
+        ->once()
+        ->andReturn([
+            'tags' => ['laptop', 'notebook', 'ноутбук'],
+            'producer' => 'any',
+            'model' => 'any',
+        ]);
+    app()->instance(OpenRouterService::class, $openRouter);
+
     // 1x1 transparent PNG
     $png = base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+G2Z0AAAAASUVORK5CYII=', true);
     expect($png)->not->toBeFalse();
@@ -219,7 +231,11 @@ test('command creates a new type and attaches it when product_type does not exis
 
     $created = TypeStructure::query()->where('type_normalized', 'laptop')->first();
     expect($created)->not->toBeNull()
-        ->and($created->tags)->toContain('laptop');
+        ->and($created->tags)->toContain('laptop')
+        ->and($created->structure)->toMatchArray([
+            'producer' => 'any',
+            'model' => 'any',
+        ]);
 
     expect($page->product_type_id)->toBe($created->id);
 });
@@ -231,6 +247,16 @@ test('command creates a new type and attaches it when product_type is a slash-de
         'domain' => 'new-type2.test',
         'is_active' => true,
     ]);
+
+    $openRouter = \Mockery::mock(OpenRouterService::class);
+    $openRouter->shouldReceive('isConfigured')->andReturnTrue();
+    $openRouter->shouldReceive('chatJson')
+        ->once()
+        ->andReturn([
+            'tags' => ['phone', 'телефон'],
+            'producer' => 'any',
+        ]);
+    app()->instance(OpenRouterService::class, $openRouter);
 
     // 1x1 transparent PNG
     $png = base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+G2Z0AAAAASUVORK5CYII=', true);
@@ -269,7 +295,10 @@ test('command creates a new type and attaches it when product_type is a slash-de
     // First candidate should be used for creation.
     $created = TypeStructure::query()->where('type_normalized', 'phone')->first();
     expect($created)->not->toBeNull()
-        ->and($created->tags)->toContain('phone');
+        ->and($created->tags)->toContain('phone')
+        ->and($created->structure)->toMatchArray([
+            'producer' => 'any',
+        ]);
 
     expect($page->product_type_id)->toBe($created->id);
 });
@@ -281,6 +310,16 @@ test('command backfills pages with product_type_detected_at set but product_type
         'domain' => 'backfill.test',
         'is_active' => true,
     ]);
+
+    $openRouter = \Mockery::mock(OpenRouterService::class);
+    $openRouter->shouldReceive('isConfigured')->andReturnTrue();
+    $openRouter->shouldReceive('chatJson')
+        ->once()
+        ->andReturn([
+            'tags' => ['phone', 'смартфон'],
+            'producer' => 'any',
+        ]);
+    app()->instance(OpenRouterService::class, $openRouter);
 
     // 1x1 transparent PNG
     $png = base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+G2Z0AAAAASUVORK5CYII=', true);
@@ -325,5 +364,8 @@ test('command backfills pages with product_type_detected_at set but product_type
     expect($page->product_type_id)->not->toBeNull()
         ->and($page->is_product)->toBeTrue();
 });
+
+
+
 
 

@@ -40,6 +40,11 @@ use Illuminate\Database\Eloquent\Relations\HasOne;
  * @property bool|null $is_product_available
  * @property int|null $product_type_id
  * @property Carbon|null $product_type_detected_at
+ * @property array|null $json_attributes
+ * @property string|null $product_code
+ * @property string|null $sku
+ * @property string|null $product_model_number
+ * @property Carbon|null $attributes_extracted_at
  * @property array|null $embedding
  * @property Carbon $created_at
  * @property Carbon $updated_at
@@ -94,6 +99,11 @@ class Page extends Model
         'is_product_available',
         'product_type_id',
         'product_type_detected_at',
+        'json_attributes',
+        'product_code',
+        'sku',
+        'product_model_number',
+        'attributes_extracted_at',
         'embedding',
     ];
 
@@ -118,6 +128,8 @@ class Page extends Model
             'is_product_available' => 'boolean',
             'product_type_id' => 'integer',
             'product_type_detected_at' => 'datetime',
+            'json_attributes' => 'array',
+            'attributes_extracted_at' => 'datetime',
             'embedding' => 'array',
         ];
     }

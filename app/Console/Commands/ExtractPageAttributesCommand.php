@@ -1,0 +1,370 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Console\Commands;
+
+use App\Models\Page;
+use App\Models\TypeStructure;
+use App\Services\LmStudioOpenApi\LmStudioOpenApiService;
+use App\Services\Redis\PageLockService;
+use Illuminate\Console\Command;
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Support\Facades\Log;
+
+/**
+ * Extract product attributes from Page::content_with_tags_purified into:
+ * - pages.json_attributes (follows type_structures.structure)
+ * - pages.sku / pages.product_code / pages.product_model_number
+ * - pages.attributes_extracted_at
+ */
+final class ExtractPageAttributesCommand extends Command
+{
+    protected $signature = 'page:extract-attributes
+                            {--limit=1 : Number of pages to process}
+                            {--domain= : Only process pages from specific domain}
+                            {--page= : Process specific page by ID}
+                            {--force : Re-extract even if already extracted}
+                            {--max-attempts=0 : Max retry attempts per page (0 = unlimited)}
+                            {--sleep-ms=0 : Sleep between retries in ms}';
+
+    protected $description = 'Extract product attributes + SKU/product_code/model_number from content_with_tags_purified using LM Studio OpenAPI';
+
+    private const string STAGE = 'attributes';
+
+    private const int MAX_USER_CONTENT_CHARS = 50000;
+
+    private ?string $extractModel = null;
+
+    public function __construct(
+        private readonly LmStudioOpenApiService $openAi,
+        private readonly PageLockService $lockService,
+    ) {
+        parent::__construct();
+
+        $model = trim((string) env('LM_STUDIO_EXTRACT_ATTRIBUTES_MODEL', ''));
+        $this->extractModel = $model !== '' ? $model : null;
+    }
+
+    public function handle(): int
+    {
+        $limit = max(1, (int) $this->option('limit'));
+        $domainFilter = $this->option('domain');
+        $pageId = $this->option('page');
+        $force = (bool) $this->option('force');
+        $maxAttempts = max(0, (int) $this->option('max-attempts'));
+        $sleepMs = max(0, (int) $this->option('sleep-ms'));
+
+        $this->logSeparator();
+        $this->info('🧩 EXTRACT PAGE ATTRIBUTES (content_with_tags_purified + type_structures.structure)');
+        $this->info("⏰ Started at: " . now()->format('Y-m-d H:i:s'));
+        $this->info("📡 API: {$this->openAi->getBaseUrl()}");
+        $this->info("🧠 Model: " . ($this->extractModel ?? $this->openAi->getModel()));
+        $this->logSeparator();
+
+        if (!$this->openAi->isConfigured()) {
+            $this->error('❌ LM Studio OpenAPI is not configured. Check LM_STUDIO_OPENAPI_BASE_URL and LM_STUDIO_OPENAPI_MODEL in .env');
+            return self::FAILURE;
+        }
+
+        // Specific page by ID
+        if ($pageId) {
+            $page = Page::find($pageId);
+            if (!$page) {
+                $this->error("❌ Page not found: {$pageId}");
+                return self::FAILURE;
+            }
+
+            if (!$this->lockService->acquireLock($page->id, self::STAGE)) {
+                $this->warn("⚠️  Page {$pageId} is locked by another process");
+                return self::SUCCESS;
+            }
+
+            $ok = $this->processPage($page, $force, $maxAttempts, $sleepMs);
+            $this->lockService->releaseLock($page->id, self::STAGE);
+
+            return $ok ? self::SUCCESS : self::FAILURE;
+        }
+
+        $processed = 0;
+        $errors = 0;
+        $skipped = 0;
+
+        $lastProcessedId = 0;
+
+        while ($processed + $skipped < $limit) {
+            $page = $this->getNextPage($lastProcessedId, $domainFilter, $force);
+
+            if (!$page) {
+                $this->info('📭 No more pages to process');
+                break;
+            }
+
+            $lastProcessedId = $page->id;
+
+            if (!$this->lockService->acquireLock($page->id, self::STAGE)) {
+                $this->line("   ⏭️  Page {$page->id} is locked, skipping...");
+                $skipped++;
+                continue;
+            }
+
+            $this->logSeparator('─');
+            $ok = $this->processPage($page, $force, $maxAttempts, $sleepMs);
+            $this->lockService->releaseLock($page->id, self::STAGE);
+
+            if ($ok) {
+                $processed++;
+            } else {
+                $errors++;
+            }
+
+            $this->newLine();
+        }
+
+        $this->logSeparator();
+        $this->info('✅ EXTRACT PAGE ATTRIBUTES COMPLETED');
+        $this->info("   Processed: {$processed}");
+        $this->info("   Skipped (locked): {$skipped}");
+        if ($errors > 0) {
+            $this->warn("   Errors: {$errors}");
+        }
+        $this->logSeparator();
+
+        return $errors > 0 ? self::FAILURE : self::SUCCESS;
+    }
+
+    private function getNextPage(int $afterId, ?string $domain, bool $force): ?Page
+    {
+        /** @var Builder<Page> $query */
+        $query = Page::query()
+            ->where('id', '>', $afterId)
+            ->where('is_product', true)
+            ->where('is_product_available', true)
+            ->whereNotNull('content_with_tags_purified')
+            ->whereNotNull('product_type_id')
+            ->orderBy('id');
+
+        if (!$force) {
+            $query->whereNull('attributes_extracted_at');
+        }
+
+        if ($domain) {
+            $query->whereHas('domain', fn ($q) => $q->where('domain', $domain));
+        }
+
+        return $query->first();
+    }
+
+    private function processPage(Page $page, bool $force, int $maxAttempts, int $sleepMs): bool
+    {
+        $startedAt = microtime(true);
+
+        $this->info("🔄 Extracting attributes: {$page->url}");
+        $this->info("   Page ID: {$page->id}");
+
+        if (!$force && $page->attributes_extracted_at !== null) {
+            $this->line('   ⏭️  Already extracted, skipping (use --force to re-run)');
+            return true;
+        }
+
+        if (empty($page->content_with_tags_purified)) {
+            $this->warn('   ⚠️  content_with_tags_purified is empty; skipping');
+            return false;
+        }
+
+        if ($page->product_type_id === null) {
+            // As requested: do not mark as extracted; leave for later when product type is detected.
+            $this->warn('   ⚠️  product_type_id is null; skipping (will retry later)');
+            return false;
+        }
+
+        $typeStructure = TypeStructure::query()->find($page->product_type_id);
+        if ($typeStructure === null) {
+            $this->warn("   ⚠️  type_structures row missing for product_type_id={$page->product_type_id}; skipping");
+            return false;
+        }
+
+        $structure = (array) ($typeStructure->structure ?? []);
+        if ($structure === []) {
+            $this->warn("   ⚠️  type_structures.structure is empty for product_type_id={$page->product_type_id}; skipping");
+            return false;
+        }
+
+        Log::info('🧩 [ExtractAttributes] Starting', [
+            'page_id' => $page->id,
+            'url' => $page->url,
+            'product_type_id' => $page->product_type_id,
+        ]);
+
+        try {
+            $systemPrompt = (string) view('ai-prompts.extract-page-attributes', [
+                'structure' => $structure,
+            ])->render();
+
+            $userText = $this->buildUserText($page);
+            $this->info('   📝 User content length: ' . strlen($userText) . ' chars');
+
+            $requiredKeys = ['sku', 'product_code', 'product_model_number', 'attributes'];
+
+            $attempt = 0;
+            while (true) {
+                $attempt++;
+
+                if ($maxAttempts > 0 && $attempt > $maxAttempts) {
+                    $this->error("   ❌ Exceeded max attempts ({$maxAttempts})");
+                    Log::error('🧩 [ExtractAttributes] Exceeded max attempts', [
+                        'page_id' => $page->id,
+                        'attempts' => $attempt - 1,
+                    ]);
+                    return false;
+                }
+
+                $this->line("   🤖 Attempt #{$attempt}...");
+
+                $parsed = $this->openAi->chatJson(
+                    systemPrompt: $systemPrompt,
+                    userText: $userText,
+                    options: $this->extractModel !== null
+                        ? ['model' => $this->extractModel]
+                        : [],
+                );
+
+                if ($parsed === null) {
+                    $this->warn('   ⚠️  Invalid/empty JSON response, retrying...');
+                    Log::warning('🧩 [ExtractAttributes] Invalid JSON, retrying', [
+                        'page_id' => $page->id,
+                        'attempt' => $attempt,
+                    ]);
+                    $this->sleepIfNeeded($sleepMs);
+                    continue;
+                }
+
+                foreach ($requiredKeys as $key) {
+                    if (!array_key_exists($key, $parsed)) {
+                        $this->warn("   ⚠️  Missing key '{$key}', retrying...");
+                        Log::warning('🧩 [ExtractAttributes] Missing required key, retrying', [
+                            'page_id' => $page->id,
+                            'attempt' => $attempt,
+                            'missing_key' => $key,
+                            'available_keys' => array_keys($parsed),
+                        ]);
+                        $this->sleepIfNeeded($sleepMs);
+                        continue 2;
+                    }
+                }
+
+                if (!is_array($parsed['attributes'])) {
+                    $this->warn("   ⚠️  'attributes' must be an object/array, retrying...");
+                    Log::warning('🧩 [ExtractAttributes] Invalid attributes type, retrying', [
+                        'page_id' => $page->id,
+                        'attempt' => $attempt,
+                        'attributes_type' => gettype($parsed['attributes']),
+                    ]);
+                    $this->sleepIfNeeded($sleepMs);
+                    continue;
+                }
+
+                $sku = $this->normalizeNullableString($parsed['sku'] ?? null, 128);
+                $productCode = $this->normalizeNullableString($parsed['product_code'] ?? null, 128);
+                $modelNumber = $this->normalizeNullableString($parsed['product_model_number'] ?? null, 128);
+
+                $page->update([
+                    'json_attributes' => $parsed['attributes'],
+                    'sku' => $sku,
+                    'product_code' => $productCode,
+                    'product_model_number' => $modelNumber,
+                    'attributes_extracted_at' => now(),
+                ]);
+
+                $this->info('   ✅ Attributes saved');
+                $this->line('   ⏱️  Took: ' . $this->formatSeconds(microtime(true) - $startedAt));
+
+                Log::info('🧩 [ExtractAttributes] ✅ Completed', [
+                    'page_id' => $page->id,
+                    'attempts' => $attempt,
+                    'took_seconds' => round(microtime(true) - $startedAt, 3),
+                    'has_sku' => $sku !== null,
+                    'has_product_code' => $productCode !== null,
+                    'has_product_model_number' => $modelNumber !== null,
+                ]);
+
+                return true;
+            }
+        } catch (\Throwable $e) {
+            $this->error('   ❌ Exception: ' . $e->getMessage());
+            $this->line('   ⏱️  Took: ' . $this->formatSeconds(microtime(true) - $startedAt));
+            Log::error('🧩 [ExtractAttributes] Exception', [
+                'page_id' => $page->id,
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+                'took_seconds' => round(microtime(true) - $startedAt, 3),
+            ]);
+            return false;
+        }
+    }
+
+    private function buildUserText(Page $page): string
+    {
+        $parts = [];
+        $parts[] = 'URL: ' . (string) $page->url;
+        if (!empty($page->title)) {
+            $parts[] = 'Title: ' . (string) $page->title;
+        }
+
+        $parts[] = "\n=== VISIBLE CONTENT ON THE PAGE (HTML) ===";
+        $parts[] = (string) $page->content_with_tags_purified;
+
+        $content = implode("\n", $parts);
+
+        if (strlen($content) > self::MAX_USER_CONTENT_CHARS) {
+            $content = substr($content, 0, self::MAX_USER_CONTENT_CHARS) . "\n... [truncated]";
+        }
+
+        return $content;
+    }
+
+    private function normalizeNullableString(mixed $value, int $maxLen): ?string
+    {
+        if ($value === null) {
+            return null;
+        }
+
+        if (is_bool($value) || is_array($value) || is_object($value)) {
+            return null;
+        }
+
+        $s = trim((string) $value);
+        if ($s === '') {
+            return null;
+        }
+
+        if (mb_strlen($s, 'UTF-8') > $maxLen) {
+            $s = mb_substr($s, 0, $maxLen, 'UTF-8');
+        }
+
+        return $s;
+    }
+
+    private function sleepIfNeeded(int $sleepMs): void
+    {
+        if ($sleepMs <= 0) {
+            return;
+        }
+
+        usleep($sleepMs * 1000);
+    }
+
+    private function formatSeconds(float $seconds): string
+    {
+        return number_format(max(0.0, $seconds), 2) . 's';
+    }
+
+    private function logSeparator(string $char = '═'): void
+    {
+        $this->line(str_repeat($char, 60));
+    }
+}
+
+
+
+

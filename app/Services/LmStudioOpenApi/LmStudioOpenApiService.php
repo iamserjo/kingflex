@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Services\LmStudioOpenApi;
 
+use App\Services\Json\JsonParserService;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -192,6 +193,34 @@ class LmStudioOpenApiService
         ];
 
         return $this->chat($messages, $options);
+    }
+
+    /**
+     * Text-only chat request that must return a JSON object.
+     *
+     * Uses response_format=json_object (when supported by the server) and then
+     * parses the assistant content with JsonParserService for robustness.
+     *
+     * @param array<string, mixed> $options
+     * @return array<string, mixed>|null
+     */
+    public function chatJson(string $systemPrompt, string $userText, array $options = []): ?array
+    {
+        $messages = [
+            ['role' => 'system', 'content' => $systemPrompt],
+            ['role' => 'user', 'content' => $userText],
+        ];
+
+        $options['response_format'] = ['type' => 'json_object'];
+
+        $response = $this->chat($messages, $options);
+        if ($response === null || empty($response['content'])) {
+            return null;
+        }
+
+        $jsonParser = app(JsonParserService::class);
+
+        return $jsonParser->parse((string) $response['content']);
     }
 
     private function client(): PendingRequest

@@ -47,10 +47,14 @@ final class TypeStructureService
     }
 
     /**
-     * Find existing type structure id for the given type/tag or create a minimal record.
+     * Find existing type structure id for the given type/tag or generate & store it (with tags/structure).
      *
-     * This method never calls AI. It ensures we always have a FK to attach to pages
-     * even when the type_structures table doesn't yet contain this type.
+     * Primary path:
+     * - If exists in DB -> return id
+     * - Else -> call getWithTags() which uses ai-prompts.type-structure + OpenRouter and persists
+     *
+     * Fallback path (only when AI generation is not possible):
+     * - Create a minimal record to avoid leaving FK null.
      */
     public function findOrCreateId(string $typeOrTag): ?int
     {
@@ -66,8 +70,13 @@ final class TypeStructureService
             return $existing->id;
         }
 
-        // Minimal record: tags include normalized and structure is empty.
-        // Use updateOrCreate to avoid unique constraint races on type_normalized.
+        // Generate + store (AI) if possible.
+        $generated = $this->getWithTags($original);
+        if (($generated['source'] ?? 'none') !== 'none') {
+            return $this->findExistingId($original);
+        }
+
+        // Fallback: minimal record.
         $row = TypeStructure::query()->updateOrCreate(
             ['type_normalized' => $normalized],
             [
@@ -304,6 +313,9 @@ final class TypeStructureService
         return $result;
     }
 }
+
+
+
 
 
 
