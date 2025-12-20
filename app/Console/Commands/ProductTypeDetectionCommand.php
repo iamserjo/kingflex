@@ -305,6 +305,25 @@ final class ProductTypeDetectionCommand extends Command
                     $productType = null;
                 }
 
+                // Deterministic availability override from page text (helps when the model misses "В наявності/Купити").
+                if ($isProduct === true) {
+                    $availabilityFromText = $this->guessAvailabilityFromText(
+                        metaDescription: (string) ($page->meta_description ?? ''),
+                        contentWithTagsPurified: (string) ($page->content_with_tags_purified ?? ''),
+                    );
+
+                    if ($availabilityFromText !== null && $availabilityFromText !== $isAvailable) {
+                        Log::info('🤖 [ProductTypeDetect] Overriding availability from page text', [
+                            'page_id' => $page->id,
+                            'url' => $page->url,
+                            'model_is_product_available' => $isAvailable,
+                            'text_is_product_available' => $availabilityFromText,
+                        ]);
+                        $this->line('   🛡️  Availability overridden from page text');
+                        $isAvailable = $availabilityFromText;
+                    }
+                }
+
                 $this->line('   🔎 Parsed: is_product=' . ($isProduct ? 'true' : 'false')
                     . ', is_product_available=' . ($isAvailable ? 'true' : 'false')
                     . ', product_type=' . ($productType ?? 'null'));
@@ -387,6 +406,61 @@ final class ProductTypeDetectionCommand extends Command
         }
 
         return mb_substr($text, 0, max(1, $maxChars), 'UTF-8');
+    }
+
+    /**
+     * Try to infer if the product can be bought/ordered right now based on text cues.
+     *
+     * @return bool|null null = unknown/ambiguous
+     */
+    private function guessAvailabilityFromText(string $metaDescription, string $contentWithTagsPurified): ?bool
+    {
+        $text = trim($metaDescription . "\n" . $contentWithTagsPurified);
+        if ($text === '') {
+            return null;
+        }
+
+        $t = mb_strtolower($text, 'UTF-8');
+
+        // Explicit negative phrases should dominate even if they contain positive substrings
+        // (e.g. "немає в наявності" contains "в наявності").
+        foreach ([
+            'немає в наявності',
+            'нет в наличии',
+            'не в наличии',
+            'відсут',
+            'out of stock',
+            'sold out',
+            'unavailable',
+            'нету в наличии',
+        ] as $needle) {
+            if (str_contains($t, $needle)) {
+                return false;
+            }
+        }
+
+        foreach ([
+            'в наявності',
+            'є в наявності',
+            'есть в наличии',
+            'available',
+            'in stock',
+            'купити',
+            'купить',
+            'в корзину',
+            'add to cart',
+            'buy now',
+            'оформити',
+            'оформить',
+            'предзаказ',
+            'preorder',
+        ] as $needle) {
+            if (str_contains($t, $needle)) {
+                return true;
+            }
+        }
+
+        return null;
     }
 
     /**
@@ -488,6 +562,24 @@ final class ProductTypeDetectionCommand extends Command
                 continue;
             }
             $candidates[] = $p;
+
+            // Add common normalization variants to improve matching:
+            // - gaming_console -> gaming console
+            // - then also try the last token ("console") if it's compound.
+            $spaced = str_replace(['_', '-'], ' ', $p);
+            $spaced = preg_replace('/\s+/u', ' ', $spaced) ?? $spaced;
+            $spaced = trim($spaced);
+            if ($spaced !== '' && $spaced !== $p) {
+                $candidates[] = $spaced;
+            }
+
+            $tokens = preg_split('/\s+/u', $spaced !== '' ? $spaced : $p, -1, PREG_SPLIT_NO_EMPTY);
+            if (is_array($tokens) && count($tokens) >= 2) {
+                $last = trim((string) end($tokens));
+                if ($last !== '') {
+                    $candidates[] = $last;
+                }
+            }
         }
 
         if ($base !== '' && !in_array($base, $candidates, true)) {

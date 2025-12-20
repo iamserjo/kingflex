@@ -106,6 +106,38 @@ test('type structure service reuses existing type when AI tags overlap (no dupli
     expect($existing->tags)->toContain('televizer');
 });
 
+test('type structure service reuses existing by tags and stores requested alias tag so lookups work', function () {
+    $existing = TypeStructure::query()->create([
+        'type' => 'Console',
+        'type_normalized' => 'console',
+        'tags' => ['console', 'gaming console'],
+        'structure' => ['producer' => 'any'],
+    ]);
+
+    /** @var OpenRouterService $openRouter */
+    $openRouter = \Mockery::mock(OpenRouterService::class);
+    $openRouter->shouldReceive('isConfigured')->andReturnTrue();
+    $openRouter->shouldReceive('chatJson')
+        ->once()
+        ->andReturn([
+            // AI recognizes it as console and doesn't include the alias itself.
+            'tags' => ['console', 'gaming console'],
+            'producer' => 'any',
+        ]);
+    app()->instance(OpenRouterService::class, $openRouter);
+
+    $service = app(TypeStructureService::class);
+
+    $id = $service->findOrCreateId('gaming_console');
+    expect($id)->toBe($existing->id);
+
+    $existing->refresh();
+    expect($existing->tags)->toContain('gaming_console');
+
+    // And now the alias can be resolved from DB.
+    expect($service->findExistingId('gaming_console'))->toBe($existing->id);
+});
+
 
 
 

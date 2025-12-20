@@ -423,6 +423,13 @@ test('command treats string availability like \"in stock\" as true', function ()
         'is_active' => true,
     ]);
 
+    TypeStructure::query()->create([
+        'type' => 'Console',
+        'type_normalized' => 'console',
+        'tags' => ['console', 'gaming console'],
+        'structure' => ['producer' => 'any'],
+    ]);
+
     // 1x1 transparent PNG
     $png = base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+G2Z0AAAAASUVORK5CYII=', true);
     expect($png)->not->toBeFalse();
@@ -458,6 +465,167 @@ test('command treats string availability like \"in stock\" as true', function ()
     $page->refresh();
     expect($page->is_product)->toBeTrue()
         ->and($page->is_product_available)->toBeTrue();
+});
+
+test('command overrides model availability to true when page text clearly indicates in-stock + buy button', function () {
+    Storage::fake('local');
+
+    $domain = Domain::query()->create([
+        'domain' => 'ti.ua',
+        'is_active' => true,
+    ]);
+
+    TypeStructure::query()->create([
+        'type' => 'Console',
+        'type_normalized' => 'console',
+        'tags' => ['console', 'gaming console'],
+        'structure' => ['producer' => 'any'],
+    ]);
+
+    // 1x1 transparent PNG
+    $png = base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+G2Z0AAAAASUVORK5CYII=', true);
+    expect($png)->not->toBeFalse();
+    Storage::disk('local')->put('screenshots/test/avail-override.png', $png);
+
+    $page = Page::query()->create([
+        'domain_id' => $domain->id,
+        'url' => 'https://ti.ua/ua/igrovaya-pristavka-microsoft-xbox-series-x.html',
+        'title' => 'Xbox Series X',
+        'meta_description' => 'Замовляй та забери сьогодні',
+        'content_with_tags_purified' => '<main>В наявності <button>Купити</button></main>',
+        'screenshot_path' => 'screenshots/test/avail-override.png',
+        'last_crawled_at' => now(),
+    ]);
+
+    $openAi = \Mockery::mock(LmStudioOpenApiService::class);
+    $openAi->shouldReceive('isConfigured')->andReturnTrue();
+    $openAi->shouldReceive('getBaseUrl')->andReturn('http://lmstudio.test');
+    $openAi->shouldReceive('getModel')->andReturn('test-model');
+    $openAi->shouldReceive('chatWithImage')
+        ->once()
+        ->andReturn([
+            // Model is wrong here; command should override to true from page text.
+            'content' => '{"is_product": true, "is_product_available": false, "product_type": "console"}',
+            'model' => 'test-model',
+        ]);
+    app()->instance(LmStudioOpenApiService::class, $openAi);
+
+    $exit = Artisan::call('page:product-type-detect', [
+        '--limit' => 1,
+        '--max-attempts' => 1,
+    ]);
+
+    expect($exit)->toBe(0);
+
+    $page->refresh();
+    expect($page->is_product)->toBeTrue()
+        ->and($page->is_product_available)->toBeTrue();
+});
+
+test('command overrides model availability to false when page text clearly indicates out-of-stock', function () {
+    Storage::fake('local');
+
+    $domain = Domain::query()->create([
+        'domain' => 'ti.ua',
+        'is_active' => true,
+    ]);
+
+    TypeStructure::query()->create([
+        'type' => 'Phone',
+        'type_normalized' => 'phone',
+        'tags' => ['phone'],
+        'structure' => ['producer' => 'any'],
+    ]);
+
+    // 1x1 transparent PNG
+    $png = base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+G2Z0AAAAASUVORK5CYII=', true);
+    expect($png)->not->toBeFalse();
+    Storage::disk('local')->put('screenshots/test/oos-override.png', $png);
+
+    $page = Page::query()->create([
+        'domain_id' => $domain->id,
+        'url' => 'https://ti.ua/ua/product/2.html',
+        'title' => 'Some product',
+        'content_with_tags_purified' => '<main>Немає в наявності</main>',
+        'screenshot_path' => 'screenshots/test/oos-override.png',
+        'last_crawled_at' => now(),
+    ]);
+
+    $openAi = \Mockery::mock(LmStudioOpenApiService::class);
+    $openAi->shouldReceive('isConfigured')->andReturnTrue();
+    $openAi->shouldReceive('getBaseUrl')->andReturn('http://lmstudio.test');
+    $openAi->shouldReceive('getModel')->andReturn('test-model');
+    $openAi->shouldReceive('chatWithImage')
+        ->once()
+        ->andReturn([
+            // Model is wrong here; command should override to false from page text.
+            'content' => '{"is_product": true, "is_product_available": true, "product_type": "phone"}',
+            'model' => 'test-model',
+        ]);
+    app()->instance(LmStudioOpenApiService::class, $openAi);
+
+    $exit = Artisan::call('page:product-type-detect', [
+        '--limit' => 1,
+        '--max-attempts' => 1,
+    ]);
+
+    expect($exit)->toBe(0);
+
+    $page->refresh();
+    expect($page->is_product)->toBeTrue()
+        ->and($page->is_product_available)->toBeFalse();
+});
+
+test('command maps compound product_type like \"gaming_console\" to existing \"console\" type_structures', function () {
+    Storage::fake('local');
+
+    $domain = Domain::query()->create([
+        'domain' => 'shop-type-map.test',
+        'is_active' => true,
+    ]);
+
+    $console = TypeStructure::query()->create([
+        'type' => 'Console',
+        'type_normalized' => 'console',
+        'tags' => ['console', 'gaming console'],
+        'structure' => ['producer' => 'any'],
+    ]);
+
+    // 1x1 transparent PNG
+    $png = base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+G2Z0AAAAASUVORK5CYII=', true);
+    expect($png)->not->toBeFalse();
+    Storage::disk('local')->put('screenshots/test/type-map.png', $png);
+
+    $page = Page::query()->create([
+        'domain_id' => $domain->id,
+        'url' => 'https://shop-type-map.test/product/1',
+        'title' => 'Xbox Series X',
+        'content_with_tags_purified' => '<main>В наявності <button>Купити</button></main>',
+        'screenshot_path' => 'screenshots/test/type-map.png',
+        'last_crawled_at' => now(),
+    ]);
+
+    $openAi = \Mockery::mock(LmStudioOpenApiService::class);
+    $openAi->shouldReceive('isConfigured')->andReturnTrue();
+    $openAi->shouldReceive('getBaseUrl')->andReturn('http://lmstudio.test');
+    $openAi->shouldReceive('getModel')->andReturn('test-model');
+    $openAi->shouldReceive('chatWithImage')
+        ->once()
+        ->andReturn([
+            'content' => '{"is_product": true, "is_product_available": true, "product_type": "gaming_console"}',
+            'model' => 'test-model',
+        ]);
+    app()->instance(LmStudioOpenApiService::class, $openAi);
+
+    $exit = Artisan::call('page:product-type-detect', [
+        '--limit' => 1,
+        '--max-attempts' => 1,
+    ]);
+
+    expect($exit)->toBe(0);
+
+    $page->refresh();
+    expect($page->product_type_id)->toBe($console->id);
 });
 
 

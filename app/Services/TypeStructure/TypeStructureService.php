@@ -222,7 +222,15 @@ final class TypeStructureService
         $existingByTags = $this->findBestExistingByTags($tags);
         if ($existingByTags !== null) {
             // Merge tags (keep existing structure unless it's empty and AI provided something).
-            $mergedTags = $this->normalizeTags(array_merge((array) ($existingByTags->tags ?? []), $tags), $existingByTags->type_normalized);
+            $mergedTags = $this->normalizeTags(
+                array_merge(
+                    (array) ($existingByTags->tags ?? []),
+                    $tags,
+                    // Always include canonical and requested normalized (alias) to avoid losing lookups like "gaming_console".
+                    [(string) $existingByTags->type_normalized, $normalized],
+                ),
+                $normalized,
+            );
 
             $update = ['tags' => $mergedTags];
             $existingStructure = (array) ($existingByTags->structure ?? []);

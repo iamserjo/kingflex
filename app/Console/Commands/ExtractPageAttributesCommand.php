@@ -33,9 +33,9 @@ final class ExtractPageAttributesCommand extends Command
 
     protected $description = 'Extract product attributes + SKU/product_code/model_number from content_with_tags_purified using LM Studio OpenAPI';
 
-    private const string STAGE = 'attributes';
+    private const  STAGE = 'attributes';
 
-    private const int MAX_USER_CONTENT_CHARS = 50000;
+    private const  MAX_USER_CONTENT_CHARS = 40000;
 
     private ?string $extractModel = null;
 

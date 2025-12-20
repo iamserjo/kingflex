@@ -27,7 +27,8 @@ class LmStudioOpenApiService
 
     public function __construct()
     {
-        $this->baseUrl = (string) config('lm_studio_openapi.base_url');
+        $aiHosts = (array) config('lm_studio_openapi.base_urls');
+        $this->baseUrl = (string) $aiHosts[array_rand($aiHosts)];
         $this->model = (string) config('lm_studio_openapi.model');
         $this->timeout = (int) config('lm_studio_openapi.timeout');
         $this->maxTokens = (int) config('lm_studio_openapi.max_tokens');

@@ -14,6 +14,10 @@ return [
     */
 
     'base_url' => env('LM_STUDIO_OPENAPI_BASE_URL'),
+    'base_urls' => [
+        env('LM_STUDIO_OPENAPI_BASE_URL'), // localhost
+//        env('LM_STUDIO_OPENAPI_BASE_URL_2'),
+    ],
 
     'model' => env('LM_STUDIO_OPENAPI_MODEL', 'ministralai/ministral-3-3b'),
 
