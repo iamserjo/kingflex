@@ -6,11 +6,13 @@ namespace App\Console\Commands;
 
 use App\Models\Page;
 use App\Models\TypeStructure;
+use App\Services\Json\JsonParserService;
 use App\Services\LmStudioOpenApi\LmStudioOpenApiService;
 use App\Services\Redis\PageLockService;
 use Illuminate\Console\Command;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\Log;
+use RuntimeException;
 
 /**
  * Extract product attributes from Page::content_with_tags_purified into:
@@ -25,7 +27,8 @@ final class ExtractPageAttributesCommand extends Command
                             {--domain= : Only process pages from specific domain}
                             {--page= : Process specific page by ID}
                             {--force : Re-extract even if already extracted}
-                            {--max-attempts=0 : Max retry attempts per page (0 = unlimited)}
+                            {--attempts=5 : Max retry attempts per page}
+                            {--max-attempts= : (Deprecated) Max retry attempts per page}
                             {--sleep-ms=0 : Sleep between retries in ms}';
 
     protected $description = 'Extract product attributes + SKU/product_code/model_number from content_with_tags_purified using LM Studio OpenAPI';
@@ -52,7 +55,11 @@ final class ExtractPageAttributesCommand extends Command
         $domainFilter = $this->option('domain');
         $pageId = $this->option('page');
         $force = (bool) $this->option('force');
-        $maxAttempts = max(0, (int) $this->option('max-attempts'));
+        $maxAttempts = max(1, (int) $this->option('attempts'));
+        $maxAttemptsDeprecated = $this->option('max-attempts');
+        if ($maxAttemptsDeprecated !== null && $maxAttemptsDeprecated !== '') {
+            $maxAttempts = max(1, (int) $maxAttemptsDeprecated);
+        }
         $sleepMs = max(0, (int) $this->option('sleep-ms'));
 
         $this->logSeparator();
@@ -67,23 +74,31 @@ final class ExtractPageAttributesCommand extends Command
             return self::FAILURE;
         }
 
-        // Specific page by ID
-        if ($pageId) {
-            $page = Page::find($pageId);
-            if (!$page) {
-                $this->error("❌ Page not found: {$pageId}");
-                return self::FAILURE;
+        try {
+            // Specific page by ID
+            if ($pageId) {
+                $page = Page::find($pageId);
+                if (!$page) {
+                    $this->error("❌ Page not found: {$pageId}");
+                    return self::FAILURE;
+                }
+
+                if (!$this->lockService->acquireLock($page->id, self::STAGE)) {
+                    $this->warn("⚠️  Page {$pageId} is locked by another process");
+                    return self::SUCCESS;
+                }
+
+                $ok = $this->processPage($page, $force, $maxAttempts, $sleepMs);
+                $this->lockService->releaseLock($page->id, self::STAGE);
+
+                return $ok ? self::SUCCESS : self::FAILURE;
             }
-
-            if (!$this->lockService->acquireLock($page->id, self::STAGE)) {
-                $this->warn("⚠️  Page {$pageId} is locked by another process");
-                return self::SUCCESS;
-            }
-
-            $ok = $this->processPage($page, $force, $maxAttempts, $sleepMs);
-            $this->lockService->releaseLock($page->id, self::STAGE);
-
-            return $ok ? self::SUCCESS : self::FAILURE;
+        } catch (RuntimeException $e) {
+            $this->error('❌ ' . $e->getMessage());
+            Log::error('🧩 [ExtractAttributes] Fatal error, stopping command', [
+                'error' => $e->getMessage(),
+            ]);
+            return self::FAILURE;
         }
 
         $processed = 0;
@@ -92,33 +107,41 @@ final class ExtractPageAttributesCommand extends Command
 
         $lastProcessedId = 0;
 
-        while ($processed + $skipped < $limit) {
-            $page = $this->getNextPage($lastProcessedId, $domainFilter, $force);
+        try {
+            while ($processed + $skipped < $limit) {
+                $page = $this->getNextPage($lastProcessedId, $domainFilter, $force);
 
-            if (!$page) {
-                $this->info('📭 No more pages to process');
-                break;
+                if (!$page) {
+                    $this->info('📭 No more pages to process');
+                    break;
+                }
+
+                $lastProcessedId = $page->id;
+
+                if (!$this->lockService->acquireLock($page->id, self::STAGE)) {
+                    $this->line("   ⏭️  Page {$page->id} is locked, skipping...");
+                    $skipped++;
+                    continue;
+                }
+
+                $this->logSeparator('─');
+                $ok = $this->processPage($page, $force, $maxAttempts, $sleepMs);
+                $this->lockService->releaseLock($page->id, self::STAGE);
+
+                if ($ok) {
+                    $processed++;
+                } else {
+                    $errors++;
+                }
+
+                $this->newLine();
             }
-
-            $lastProcessedId = $page->id;
-
-            if (!$this->lockService->acquireLock($page->id, self::STAGE)) {
-                $this->line("   ⏭️  Page {$page->id} is locked, skipping...");
-                $skipped++;
-                continue;
-            }
-
-            $this->logSeparator('─');
-            $ok = $this->processPage($page, $force, $maxAttempts, $sleepMs);
-            $this->lockService->releaseLock($page->id, self::STAGE);
-
-            if ($ok) {
-                $processed++;
-            } else {
-                $errors++;
-            }
-
-            $this->newLine();
+        } catch (RuntimeException $e) {
+            $this->error('❌ ' . $e->getMessage());
+            Log::error('🧩 [ExtractAttributes] Fatal error, stopping command', [
+                'error' => $e->getMessage(),
+            ]);
+            return self::FAILURE;
         }
 
         $this->logSeparator();
@@ -210,7 +233,7 @@ final class ExtractPageAttributesCommand extends Command
             while (true) {
                 $attempt++;
 
-                if ($maxAttempts > 0 && $attempt > $maxAttempts) {
+                if ($attempt > $maxAttempts) {
                     $this->error("   ❌ Exceeded max attempts ({$maxAttempts})");
                     Log::error('🧩 [ExtractAttributes] Exceeded max attempts', [
                         'page_id' => $page->id,
@@ -221,19 +244,76 @@ final class ExtractPageAttributesCommand extends Command
 
                 $this->line("   🤖 Attempt #{$attempt}...");
 
-                $parsed = $this->openAi->chatJson(
-                    systemPrompt: $systemPrompt,
-                    userText: $userText,
-                    options: $this->extractModel !== null
-                        ? ['model' => $this->extractModel]
-                        : [],
+                // LM Studio OpenAI-compatible servers often support only:
+                // - response_format.type = "text"
+                // - response_format.type = "json_schema"
+                // We enforce JSON via the prompt and parse the returned text.
+                $options = [
+                    'response_format' => ['type' => 'text'],
+                ];
+                if ($this->extractModel !== null) {
+                    $options['model'] = $this->extractModel;
+                }
+
+                $response = $this->openAi->chat(
+                    messages: [
+                        ['role' => 'system', 'content' => $systemPrompt],
+                        ['role' => 'user', 'content' => $userText],
+                    ],
+                    options: $options,
                 );
 
-                if ($parsed === null) {
-                    $this->warn('   ⚠️  Invalid/empty JSON response, retrying...');
-                    Log::warning('🧩 [ExtractAttributes] Invalid JSON, retrying', [
+                if ($response === null) {
+                    throw new RuntimeException('LM Studio is unavailable: API returned null response');
+                }
+
+                if (isset($response['error'])) {
+                    $error = $response['error'];
+                    $status = $error['status'] ?? null;
+                    $message = $error['message'] ?? 'unknown';
+                    $url = $error['url'] ?? 'unknown';
+                    $body = (string) ($error['body'] ?? '');
+
+                    // Fail-fast when LM Studio is unreachable (timeouts, connection refused, DNS, etc.).
+                    if ($status === null || $status === 0) {
+                        throw new RuntimeException("LM Studio is unavailable: {$message}");
+                    }
+
+                    $this->warn("   ⚠️  API Error" . ($status !== null ? " (HTTP {$status})" : '') . ": {$message}");
+                    $this->warn("   🔗 URL: {$url}");
+                    if ($body !== '') {
+                        $this->warn("   📄 Response: " . substr($body, 0, 400));
+                    }
+
+                    Log::warning('🧩 [ExtractAttributes] API error, retrying', [
                         'page_id' => $page->id,
                         'attempt' => $attempt,
+                        'error' => $error,
+                    ]);
+                    $this->sleepIfNeeded($sleepMs);
+                    continue;
+                }
+
+                $content = (string) ($response['content'] ?? '');
+                if ($content === '') {
+                    $this->warn('   ⚠️  Empty assistant content, retrying...');
+                    Log::warning('🧩 [ExtractAttributes] Empty assistant content, retrying', [
+                        'page_id' => $page->id,
+                        'attempt' => $attempt,
+                    ]);
+                    $this->sleepIfNeeded($sleepMs);
+                    continue;
+                }
+
+                /** @var JsonParserService $jsonParser */
+                $jsonParser = app(JsonParserService::class);
+                $parsed = $jsonParser->parse($content);
+                if ($parsed === null) {
+                    $this->warn('   ⚠️  Invalid JSON content, retrying...');
+                    Log::warning('🧩 [ExtractAttributes] Invalid JSON content, retrying', [
+                        'page_id' => $page->id,
+                        'attempt' => $attempt,
+                        'response_preview' => substr($content, 0, 400),
                     ]);
                     $this->sleepIfNeeded($sleepMs);
                     continue;
@@ -291,6 +371,9 @@ final class ExtractPageAttributesCommand extends Command
                 return true;
             }
         } catch (\Throwable $e) {
+            if ($e instanceof RuntimeException) {
+                throw $e;
+            }
             $this->error('   ❌ Exception: ' . $e->getMessage());
             $this->line('   ⏱️  Took: ' . $this->formatSeconds(microtime(true) - $startedAt));
             Log::error('🧩 [ExtractAttributes] Exception', [

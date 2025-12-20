@@ -211,7 +211,10 @@ class LmStudioOpenApiService
             ['role' => 'user', 'content' => $userText],
         ];
 
-        $options['response_format'] = ['type' => 'json_object'];
+        // Some LM Studio OpenAI-compatible servers do not support json_object,
+        // but accept only "text" or "json_schema". We enforce JSON via the prompt
+        // and parse the returned text.
+        $options['response_format'] = ['type' => 'text'];
 
         $response = $this->chat($messages, $options);
         if ($response === null || empty($response['content'])) {

@@ -51,23 +51,27 @@ test('command extracts attributes and stores json_attributes + sku/product_code/
     $openAi->shouldReceive('isConfigured')->andReturnTrue();
     $openAi->shouldReceive('getBaseUrl')->andReturn('http://lmstudio.test');
     $openAi->shouldReceive('getModel')->andReturn('test-model');
-    $openAi->shouldReceive('chatJson')
+    $openAi->shouldReceive('chat')
         ->once()
         ->andReturn([
-            'sku' => 'ABC-123',
-            'product_code' => 'PC-999',
-            'product_model_number' => 'MN-777',
-            'attributes' => [
-                'producer' => 'acme',
-                'model' => 'super phone',
-                'ram' => ['size' => 8, 'humanSize' => '8GB'],
-            ],
+            'content' => json_encode([
+                'sku' => 'ABC-123',
+                'product_code' => 'PC-999',
+                'product_model_number' => 'MN-777',
+                'attributes' => [
+                    'producer' => 'acme',
+                    'model' => 'super phone',
+                    'ram' => ['size' => 8, 'humanSize' => '8GB'],
+                ],
+            ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+            'model' => 'test-model',
+            'usage' => [],
         ]);
     app()->instance(LmStudioOpenApiService::class, $openAi);
 
     $exit = Artisan::call('page:extract-attributes', [
         '--limit' => 1,
-        '--max-attempts' => 1,
+        '--attempts' => 1,
     ]);
 
     expect($exit)->toBe(0);
