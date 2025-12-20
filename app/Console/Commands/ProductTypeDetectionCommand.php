@@ -149,6 +149,12 @@ final class ProductTypeDetectionCommand extends Command
                         $q2->where('is_product', true)
                             ->whereNotNull('product_type_detected_at')
                             ->whereNull('product_type_id');
+                    })
+                    // Backfill obvious filter/listing URLs that were previously misclassified as products.
+                    ->orWhere(function (Builder $q3) {
+                        $q3->whereNotNull('product_type_detected_at')
+                            ->where('is_product', true)
+                            ->where('url', 'like', '%/ch-%');
                     });
             });
         }
@@ -186,6 +192,15 @@ final class ProductTypeDetectionCommand extends Command
             $parts[] = "URL: " . $this->sanitizeUtf8($page->url);
             if (!empty($page->title)) {
                 $parts[] = "Title: " . $this->sanitizeUtf8($page->title);
+            }
+            if (!empty($page->meta_description)) {
+                $parts[] = "Meta description: " . $this->sanitizeUtf8($page->meta_description);
+            }
+            if (!empty($page->content_with_tags_purified)) {
+                $preview = $this->buildContentPreview((string) $page->content_with_tags_purified, 2000);
+                if ($preview !== '') {
+                    $parts[] = "Content preview: " . $this->sanitizeUtf8($preview);
+                }
             }
             $content = implode("\n", $parts);
             $this->info('   📝 Context length (text only): ' . strlen($content) . ' chars');
@@ -276,6 +291,24 @@ final class ProductTypeDetectionCommand extends Command
                     $productType = null;
                 }
 
+                // Safety override: filter/listing URLs should never be treated as a single product page.
+                if ($this->isObviousListingUrl((string) $page->url)) {
+                    Log::info('🤖 [ProductTypeDetect] Overriding is_product=false due to listing-like URL', [
+                        'page_id' => $page->id,
+                        'url' => $page->url,
+                        'model_is_product' => $isProduct,
+                        'model_product_type' => $productType,
+                    ]);
+                    $this->line('   🛡️  URL looks like listing/filter; forcing is_product=false');
+                    $isProduct = false;
+                    $isAvailable = false;
+                    $productType = null;
+                }
+
+                $this->line('   🔎 Parsed: is_product=' . ($isProduct ? 'true' : 'false')
+                    . ', is_product_available=' . ($isAvailable ? 'true' : 'false')
+                    . ', product_type=' . ($productType ?? 'null'));
+
                 $update = [
                     'is_product' => $isProduct,
                     'product_type_detected_at' => now(),
@@ -318,6 +351,42 @@ final class ProductTypeDetectionCommand extends Command
             ]);
             return false;
         }
+    }
+
+    /**
+     * Heuristic for URLs that are almost certainly category/listing/filter pages.
+     */
+    private function isObviousListingUrl(string $url): bool
+    {
+        $path = (string) (parse_url($url, PHP_URL_PATH) ?? '');
+        $path = mb_strtolower($path, 'UTF-8');
+
+        // Common filter pattern used by many ecommerce sites (including ti.ua): /ch-...
+        if (str_contains($path, '/ch-')) {
+            return true;
+        }
+
+        // Common listing endpoints
+        foreach (['/search', '/catalog', '/category', '/categories', '/filters'] as $needle) {
+            if (str_contains($path, $needle)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function buildContentPreview(string $contentWithTagsPurified, int $maxChars): string
+    {
+        $text = strip_tags($contentWithTagsPurified);
+        $text = preg_replace('/\s+/u', ' ', $text) ?? $text;
+        $text = trim($text);
+
+        if ($text === '') {
+            return '';
+        }
+
+        return mb_substr($text, 0, max(1, $maxChars), 'UTF-8');
     }
 
     /**
@@ -448,7 +517,41 @@ final class ProductTypeDetectionCommand extends Command
 
         if (is_string($value)) {
             $v = mb_strtolower(trim($value), 'UTF-8');
-            return in_array($v, ['1', 'true', 'yes', 'y', 'да'], true);
+
+            // Common negative signals (models sometimes return labels instead of booleans).
+            if (str_contains($v, 'out of stock')
+                || str_contains($v, 'sold out')
+                || str_contains($v, 'unavailable')
+                || str_contains($v, 'нет в наличии')
+                || str_contains($v, 'немає в наявності')
+                || str_contains($v, 'не в наличии')
+                || str_contains($v, 'нету в наличии')
+                || str_contains($v, 'відсут')
+            ) {
+                return false;
+            }
+
+            // Common positive signals.
+            if (in_array($v, ['1', 'true', 'yes', 'y', 'да'], true)) {
+                return true;
+            }
+
+            if (str_contains($v, 'in stock')
+                || str_contains($v, 'available')
+                || str_contains($v, 'в наличии')
+                || str_contains($v, 'є в наявності')
+                || str_contains($v, 'наявн')
+                || str_contains($v, 'купить')
+                || str_contains($v, 'в корзину')
+                || str_contains($v, 'add to cart')
+                || str_contains($v, 'buy now')
+                || str_contains($v, 'preorder')
+                || str_contains($v, 'предзаказ')
+            ) {
+                return true;
+            }
+
+            return false;
         }
 
         return false;

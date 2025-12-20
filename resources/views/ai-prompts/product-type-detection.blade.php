@@ -11,11 +11,23 @@
 {
   "is_product": true,
   "is_product_available": true,
-  "product_type": "phone"
+  "product_type": "gimbal"
 }
 
 ВАЖНО:
 - product_type должен быть ОДНИМ значением (одной строкой), НЕ списком и НЕ строкой через разделители.
-- Выбирай строго одно значение из списка: phone, tablet, case, laptop, speaker.
 - НЕЛЬЗЯ возвращать: "phone|tablet|case" или "phone, tablet" и т.п.
+- product_type должен быть коротким названием типа товара (1-3 слова), например: "phone", "tablet", "laptop", "gimbal", "steadycam", "router", "headphones".
+
+КРИТИЧЕСКИ ВАЖНО (для is_product_available):
+- is_product_available=true ТОЛЬКО если товар можно КУПИТЬ/ЗАКАЗАТЬ прямо с этой страницы сейчас:
+  есть кнопка типа "Купить", "В корзину", "Add to cart", "Buy now", "Оформить заказ" или аналог и не указано "нет в наличии".
+- is_product_available=false если явно указано "Немає в наявності/Нет в наличии/Out of stock/Sold out/Unavailable" или нет возможности добавить в корзину/заказать.
+- Если это предзаказ ("Предзаказ/Preorder") и есть возможность оформить — считай is_product_available=true.
+- Если is_product=false, верни is_product_available=null.
+
+КРИТИЧЕСКИ ВАЖНО (для is_product):
+- is_product=true ТОЛЬКО если это страница ОДНОГО конкретного товара (один товар, одна карточка, одна цена/вариант товара).
+- Если это каталог/категория/листинг/страница с фильтрами/сортировкой/списком товаров (даже если товаров 1) — is_product=false.
+- Если URL содержит сегменты фильтров (например "/ch-...") — is_product=false.
 

@@ -72,5 +72,42 @@ test('type structure service generates and stores structure when missing', funct
         ->and($stored->tags)->toContain('phone');
 });
 
+test('type structure service reuses existing type when AI tags overlap (no duplicates)', function () {
+    $existing = TypeStructure::query()->create([
+        'type' => 'Телевизор',
+        'type_normalized' => 'televizor',
+        'tags' => ['televizor', 'телевизор', 'tv'],
+        'structure' => ['producer' => 'samsung'],
+    ]);
+
+    /** @var OpenRouterService $openRouter */
+    $openRouter = \Mockery::mock(OpenRouterService::class);
+    $openRouter->shouldReceive('isConfigured')->andReturnTrue();
+    $openRouter->shouldReceive('chatJson')
+        ->once()
+        ->andReturn([
+            'tags' => ['телевизор', 'televizor', 'televizer'],
+            'producer' => 'samsung',
+            'model' => 'qn85b',
+        ]);
+    app()->instance(OpenRouterService::class, $openRouter);
+
+    $service = app(TypeStructureService::class);
+
+    $result = $service->getWithTags('televizer');
+
+    // Should not create a new row; should reuse existing.
+    expect(TypeStructure::query()->count())->toBe(1)
+        ->and($result['source'])->toBe('db')
+        ->and($service->findExistingId('televizer'))->toBe($existing->id);
+
+    $existing->refresh();
+    // Tags should be merged to include the new alias.
+    expect($existing->tags)->toContain('televizer');
+});
+
+
+
+
 
 

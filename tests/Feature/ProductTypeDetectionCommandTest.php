@@ -365,6 +365,101 @@ test('command backfills pages with product_type_detected_at set but product_type
         ->and($page->is_product)->toBeTrue();
 });
 
+test('command forces is_product=false for listing/filter URLs (e.g. /ch-...) even if model says product', function () {
+    Storage::fake('local');
+
+    $domain = Domain::query()->create([
+        'domain' => 'ti.ua',
+        'is_active' => true,
+    ]);
+
+    // 1x1 transparent PNG
+    $png = base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+G2Z0AAAAASUVORK5CYII=', true);
+    expect($png)->not->toBeFalse();
+    Storage::disk('local')->put('screenshots/test/listing.png', $png);
+
+    // URL pattern that indicates filter/listing page.
+    $page = Page::query()->create([
+        'domain_id' => $domain->id,
+        'url' => 'https://ti.ua/ua/stabilizatory/ch-proizvoditel-feiyu/',
+        'title' => 'Стабілізатори Feiyu',
+        'screenshot_path' => 'screenshots/test/listing.png',
+        'last_crawled_at' => now(),
+    ]);
+
+    $openAi = \Mockery::mock(LmStudioOpenApiService::class);
+    $openAi->shouldReceive('isConfigured')->andReturnTrue();
+    $openAi->shouldReceive('getBaseUrl')->andReturn('http://lmstudio.test');
+    $openAi->shouldReceive('getModel')->andReturn('test-model');
+    $openAi->shouldReceive('chatWithImage')
+        ->once()
+        ->andReturn([
+            // Even if model misclassifies this page as a product, the command must override it.
+            'content' => '{"is_product": true, "is_product_available": true, "product_type": "speaker"}',
+            'model' => 'test-model',
+        ]);
+    app()->instance(LmStudioOpenApiService::class, $openAi);
+
+    $exit = Artisan::call('page:product-type-detect', [
+        '--limit' => 1,
+        '--max-attempts' => 1,
+    ]);
+
+    expect($exit)->toBe(0);
+
+    $page->refresh();
+
+    expect($page->is_product)->toBeFalse()
+        ->and($page->is_product_available)->toBeNull()
+        ->and($page->product_type_id)->toBeNull()
+        ->and($page->product_type_detected_at)->not->toBeNull();
+});
+
+test('command treats string availability like \"in stock\" as true', function () {
+    Storage::fake('local');
+
+    $domain = Domain::query()->create([
+        'domain' => 'shop-availability.test',
+        'is_active' => true,
+    ]);
+
+    // 1x1 transparent PNG
+    $png = base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+G2Z0AAAAASUVORK5CYII=', true);
+    expect($png)->not->toBeFalse();
+    Storage::disk('local')->put('screenshots/test/availability.png', $png);
+
+    $page = Page::query()->create([
+        'domain_id' => $domain->id,
+        'url' => 'https://shop-availability.test/product/1',
+        'title' => 'Xbox Series X',
+        'screenshot_path' => 'screenshots/test/availability.png',
+        'last_crawled_at' => now(),
+    ]);
+
+    $openAi = \Mockery::mock(LmStudioOpenApiService::class);
+    $openAi->shouldReceive('isConfigured')->andReturnTrue();
+    $openAi->shouldReceive('getBaseUrl')->andReturn('http://lmstudio.test');
+    $openAi->shouldReceive('getModel')->andReturn('test-model');
+    $openAi->shouldReceive('chatWithImage')
+        ->once()
+        ->andReturn([
+            'content' => '{"is_product": true, "is_product_available": "in stock", "product_type": "console"}',
+            'model' => 'test-model',
+        ]);
+    app()->instance(LmStudioOpenApiService::class, $openAi);
+
+    $exit = Artisan::call('page:product-type-detect', [
+        '--limit' => 1,
+        '--max-attempts' => 1,
+    ]);
+
+    expect($exit)->toBe(0);
+
+    $page->refresh();
+    expect($page->is_product)->toBeTrue()
+        ->and($page->is_product_available)->toBeTrue();
+});
+
 
 
 
