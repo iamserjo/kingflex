@@ -129,7 +129,7 @@ async function extractText() {
             try {
                 // Remove layout/marketing chrome before screenshot (requirements for page:extract)
                 await page.evaluate(() => {
-                    for (const el of document.querySelectorAll('header, footer, #top-banner')) {
+                    for (const el of document.querySelectorAll('header, footer, #top-banner, .cl-dialog, #credential_picker_iframe')) {
                         el.remove();
                     }
                 });

@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace App\Services\OpenRouter;
 
+use App\Models\AiRequestLog;
+use App\Services\Ai\AiRequestLogger;
 use App\Services\Json\JsonParserService;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Http\Client\Response;
@@ -93,6 +95,12 @@ class OpenRouterService
             'has_api_key' => !empty($this->apiKey),
         ]);
 
+        /** @var AiRequestLogger $aiLogger */
+        $aiLogger = app(AiRequestLogger::class);
+
+        $requestBody = [];
+        $aiCtx = null;
+
         try {
             // Sanitize messages to ensure valid UTF-8
             $messages = $this->sanitizeMessages($messages);
@@ -117,9 +125,19 @@ class OpenRouterService
                 $requestBody['tool_choice'] = $options['tool_choice'];
             }
 
+            $aiCtx = $aiLogger->start(
+                provider: AiRequestLog::PROVIDER_OPENROUTER,
+                httpMethod: 'POST',
+                baseUrl: $this->baseUrl,
+                path: '/chat/completions',
+                model: (string) $model,
+                requestPayload: $requestBody,
+            );
+
             $response = $this->client()->post('/chat/completions', $requestBody);
 
             $data = $response->json();
+            $usage = is_array($data) ? ($data['usage'] ?? null) : null;
 
             // OpenRouter may return 200 with error body
             if (is_array($data) && isset($data['error'])) {
@@ -131,6 +149,18 @@ class OpenRouterService
                 $errorMessage = is_string($data['error'])
                     ? $data['error']
                     : (json_encode($data['error'], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: 'OpenRouter error');
+
+                $aiLogger->finishError(
+                    ctx: $aiCtx,
+                    statusCode: $response->status(),
+                    message: $errorMessage,
+                    responseBody: $response->body(),
+                    responsePayload: $data,
+                    usage: $usage,
+                    errorContext: [
+                        'type' => 'api_error_body',
+                    ],
+                );
 
                 return [
                     'message' => [],
@@ -150,6 +180,19 @@ class OpenRouterService
                     'status' => $response->status(),
                     'body' => $response->body(),
                 ]);
+
+                $aiLogger->finishError(
+                    ctx: $aiCtx,
+                    statusCode: $response->status(),
+                    message: 'OpenRouter request failed',
+                    responseBody: $response->body(),
+                    responsePayload: is_array($data) ? $data : null,
+                    usage: $usage,
+                    errorContext: [
+                        'type' => 'http_error',
+                    ],
+                );
+
                 return [
                     'message' => [],
                     'usage' => (array) ($data['usage'] ?? []),
@@ -181,6 +224,18 @@ class OpenRouterService
                     'error' => $choiceError,
                 ]);
 
+                $aiLogger->finishError(
+                    ctx: $aiCtx,
+                    statusCode: is_array($choiceError) ? ($choiceError['code'] ?? null) : null,
+                    message: $choiceErrorMessage,
+                    responseBody: $response->body(),
+                    responsePayload: $data,
+                    usage: $usage,
+                    errorContext: [
+                        'type' => 'choice_error',
+                    ],
+                );
+
                 return [
                     'message' => [],
                     'usage' => (array) ($data['usage'] ?? []),
@@ -195,6 +250,14 @@ class OpenRouterService
             }
 
             $message = (array) ($data['choices'][0]['message'] ?? []);
+
+            $aiLogger->finishSuccess(
+                ctx: $aiCtx,
+                statusCode: $response->status(),
+                responsePayload: $data,
+                responseBody: $response->body(),
+                usage: $usage,
+            );
 
             return [
                 'message' => $message,
@@ -216,6 +279,19 @@ class OpenRouterService
                 'status' => $status,
                 'body' => $body,
             ]);
+
+            $aiLogger->finishError(
+                ctx: $aiCtx,
+                statusCode: $status,
+                message: $e->getMessage(),
+                responseBody: $body,
+                responsePayload: null,
+                usage: null,
+                errorContext: [
+                    'type' => 'exception',
+                    'exception_class' => $e::class,
+                ],
+            );
 
             return [
                 'message' => [],
@@ -340,13 +416,32 @@ class OpenRouterService
             'text_preview' => substr($text, 0, 100) . '...',
         ]);
 
+        /** @var AiRequestLogger $aiLogger */
+        $aiLogger = app(AiRequestLogger::class);
+        $aiCtx = null;
+
         try {
+            $requestBody = [
+                'model' => $this->embeddingModel,
+                'input' => $text,
+            ];
+
+            $aiCtx = $aiLogger->start(
+                provider: AiRequestLog::PROVIDER_OPENROUTER,
+                httpMethod: 'POST',
+                baseUrl: $this->baseUrl,
+                path: '/embeddings',
+                model: $this->embeddingModel,
+                requestPayload: $requestBody,
+            );
+
             $response = $this->client()->post('/embeddings', [
                 'model' => $this->embeddingModel,
                 'input' => $text,
             ]);
 
             $data = $response->json();
+            $usage = is_array($data) ? ($data['usage'] ?? null) : null;
 
             Log::debug('📥 Embedding response', [
                 'status' => $response->status(),
@@ -359,6 +454,18 @@ class OpenRouterService
                     'error' => $data['error'],
                     'model' => $this->embeddingModel,
                 ]);
+
+                $aiLogger->finishError(
+                    ctx: $aiCtx,
+                    statusCode: $response->status(),
+                    message: is_string($data['error']) ? $data['error'] : 'OpenRouter embedding error',
+                    responseBody: $response->body(),
+                    responsePayload: $data,
+                    usage: $usage,
+                    errorContext: [
+                        'type' => 'api_error_body',
+                    ],
+                );
                 return null;
             }
 
@@ -368,6 +475,18 @@ class OpenRouterService
                     'body' => $response->body(),
                     'model' => $this->embeddingModel,
                 ]);
+
+                $aiLogger->finishError(
+                    ctx: $aiCtx,
+                    statusCode: $response->status(),
+                    message: 'OpenRouter embedding request failed',
+                    responseBody: $response->body(),
+                    responsePayload: is_array($data) ? $data : null,
+                    usage: $usage,
+                    errorContext: [
+                        'type' => 'http_error',
+                    ],
+                );
                 return null;
             }
 
@@ -376,6 +495,18 @@ class OpenRouterService
                     'response_keys' => array_keys($data),
                     'data' => $data,
                 ]);
+
+                $aiLogger->finishError(
+                    ctx: $aiCtx,
+                    statusCode: $response->status(),
+                    message: 'Embedding not found in response',
+                    responseBody: $response->body(),
+                    responsePayload: $data,
+                    usage: $usage,
+                    errorContext: [
+                        'type' => 'missing_embedding',
+                    ],
+                );
                 return null;
             }
 
@@ -383,12 +514,33 @@ class OpenRouterService
                 'dimensions' => count($data['data'][0]['embedding']),
             ]);
 
+            $aiLogger->finishSuccess(
+                ctx: $aiCtx,
+                statusCode: $response->status(),
+                responsePayload: $data,
+                responseBody: $response->body(),
+                usage: $usage,
+            );
+
             return $data['data'][0]['embedding'];
         } catch (\Exception $e) {
             Log::error('❌ OpenRouter embedding exception', [
                 'message' => $e->getMessage(),
                 'model' => $this->embeddingModel,
             ]);
+
+            $aiLogger->finishError(
+                ctx: $aiCtx,
+                statusCode: null,
+                message: $e->getMessage(),
+                responseBody: null,
+                responsePayload: null,
+                usage: null,
+                errorContext: [
+                    'type' => 'exception',
+                    'exception_class' => $e::class,
+                ],
+            );
             return null;
         }
     }
@@ -401,7 +553,25 @@ class OpenRouterService
      */
     public function createEmbeddings(array $texts): ?array
     {
+        /** @var AiRequestLogger $aiLogger */
+        $aiLogger = app(AiRequestLogger::class);
+        $aiCtx = null;
+
         try {
+            $requestBody = [
+                'model' => $this->embeddingModel,
+                'input' => $texts,
+            ];
+
+            $aiCtx = $aiLogger->start(
+                provider: AiRequestLog::PROVIDER_OPENROUTER,
+                httpMethod: 'POST',
+                baseUrl: $this->baseUrl,
+                path: '/embeddings',
+                model: $this->embeddingModel,
+                requestPayload: $requestBody,
+            );
+
             $response = $this->client()->post('/embeddings', [
                 'model' => $this->embeddingModel,
                 'input' => $texts,
@@ -412,10 +582,30 @@ class OpenRouterService
                     'status' => $response->status(),
                     'body' => $response->body(),
                 ]);
+
+                $aiLogger->finishError(
+                    ctx: $aiCtx,
+                    statusCode: $response->status(),
+                    message: 'OpenRouter batch embedding request failed',
+                    responseBody: $response->body(),
+                    responsePayload: $response->json(),
+                    usage: null,
+                    errorContext: [
+                        'type' => 'http_error',
+                    ],
+                );
                 return null;
             }
 
             $data = $response->json();
+
+            $aiLogger->finishSuccess(
+                ctx: $aiCtx,
+                statusCode: $response->status(),
+                responsePayload: $data,
+                responseBody: $response->body(),
+                usage: is_array($data) ? ($data['usage'] ?? null) : null,
+            );
 
             return array_map(fn($item) => $item['embedding'], $data['data'] ?? []);
         } catch (\Exception $e) {
@@ -423,6 +613,20 @@ class OpenRouterService
                 'message' => $e->getMessage(),
                 'trace' => $e->getTraceAsString(),
             ]);
+
+            $aiLogger->finishError(
+                ctx: $aiCtx,
+                statusCode: null,
+                message: $e->getMessage(),
+                responseBody: null,
+                responsePayload: null,
+                usage: null,
+                errorContext: [
+                    'type' => 'exception',
+                    'exception_class' => $e::class,
+                ],
+            );
+
             return null;
         }
     }

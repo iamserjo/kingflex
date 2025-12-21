@@ -5,18 +5,20 @@ declare(strict_types=1);
 namespace App\Console\Commands;
 
 use App\Models\Page;
-use App\Services\Ollama\OllamaService;
+use App\Services\Json\JsonParserService;
+use App\Services\LmStudioOpenApi\LmStudioOpenApiService;
+use App\Services\Pages\PageCandidateFinderService;
 use App\Services\Redis\PageLockService;
 use Illuminate\Console\Command;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\Log;
 
 /**
- * Stage 2: Generate recap for pages using Ollama AI.
+ * Stage 2: Generate product fields for pages using LM Studio OpenAPI.
  *
  * Responsibilities:
- * - Find pages with content but no recap
- * - Generate AI recap using Ollama (ministral-3:3b)
- * - Save recap_content
+ * - Find product pages with extracted content that are missing product fields
+ * - Generate product_summary/product specs/abilities/predicted search queries
  *
  * Uses Redis-based locking to prevent duplicate processing.
  */
@@ -27,13 +29,15 @@ class GeneratePageRecapCommand extends Command
                             {--domain= : Only process pages from specific domain}
                             {--page= : Process specific page by ID}';
 
-    protected $description = 'Stage 2: Generate recap for pages using Ollama AI';
+    protected $description = 'Stage 2: Generate product fields for pages using LM Studio OpenAPI';
 
     private const STAGE = 'recap';
 
     public function __construct(
-        private readonly OllamaService $ollama,
+        private readonly LmStudioOpenApiService $openAi,
         private readonly PageLockService $lockService,
+        private readonly PageCandidateFinderService $candidates,
+        private readonly JsonParserService $jsonParser,
     ) {
         parent::__construct();
     }
@@ -45,24 +49,17 @@ class GeneratePageRecapCommand extends Command
         $pageId = $this->option('page');
 
         $this->logSeparator();
-        $this->info('🤖 STAGE 2: PAGE RECAP GENERATOR');
+        $this->info('🤖 STAGE 2: PRODUCT FIELDS GENERATOR');
         $this->info("⏰ Started at: " . now()->format('Y-m-d H:i:s'));
-        $this->info("📡 Ollama: {$this->ollama->getBaseUrl()}");
-        $this->info("🧠 Model: {$this->ollama->getModel()}");
-
-        // Fetch and display available models
-        $availableModels = $this->ollama->getAvailableModels();
-        if (!empty($availableModels)) {
-            $this->info("📋 Available models: " . implode(', ', $availableModels));
-        } else {
-            $this->warn("⚠️  Could not fetch available models from Ollama");
-        }
+        $recapModel = $this->getRecapModelOverride();
+        $this->info("📡 LM Studio: {$this->openAi->getBaseUrl()}");
+        $this->info("🧠 Model: " . ($recapModel ?? $this->openAi->getModel()));
 
         $this->logSeparator();
 
-        // Check Ollama configuration
-        if (!$this->ollama->isConfigured()) {
-            $this->error('❌ Ollama is not configured. Check OLLAMA_BASE_URL and OLLAMA_MODEL in .env');
+        // Check LM Studio configuration
+        if (!$this->openAi->isConfigured()) {
+            $this->error('❌ LM Studio OpenAPI is not configured. Check LM_STUDIO_OPENAPI_BASE_URL and LM_STUDIO_OPENAPI_MODEL in .env');
             return self::FAILURE;
         }
 
@@ -135,44 +132,34 @@ class GeneratePageRecapCommand extends Command
     }
 
     /**
-     * Get the next page that needs recap generation.
-     * Orders by last_crawled_at to process recently fetched pages first.
-     */
-    private function getNextPage(int $afterId, ?string $domain): ?Page
-    {
-        $query = Page::query()
-            ->where('id', '>', $afterId)
-            ->whereNotNull('content_with_tags_purified')
-            ->whereNotNull('last_crawled_at')
-            ->whereNull('recap_content')
-            ->orderBy('last_crawled_at', 'desc')
-            ->orderBy('id');
-
-        if ($domain) {
-            $query->whereHas('domain', fn($q) => $q->where('domain', $domain));
-        }
-
-        return $query->first();
-    }
-
-    /**
-     * Process a single page - generate recap with Ollama.
+     * Process a single page - generate product fields with Ollama.
      */
     private function processPage(Page $page): bool
     {
         $startTime = microtime(true);
 
-        $this->info("🔄 Generating recap: {$page->url}");
+        $this->info("🔄 Generating product fields: {$page->url}");
         $this->info("   Page ID: {$page->id}");
 
-        Log::info('🤖 [Stage2:Recap] Starting recap generation', [
+        if (!$this->isProductPage($page)) {
+            $this->warn('   ⏭️  Not a product page; skipping');
+            Log::info('🤖 [Stage2:ProductFields] Skipped (not product)', [
+                'page_id' => $page->id,
+                'url' => $page->url,
+                'page_type' => $page->page_type,
+                'is_product' => $page->is_product,
+            ]);
+            return true;
+        }
+
+        Log::info('🤖 [Stage2:ProductFields] Starting generation', [
             'page_id' => $page->id,
             'url' => $page->url,
         ]);
 
         try {
             // Load system prompt
-            $systemPrompt = view('ai-prompts.page-recap')->render();
+            $systemPrompt = view('ai-prompts.product-recap-fields')->render();
 
             // Build content for AI
             $parts = [];
@@ -198,31 +185,82 @@ class GeneratePageRecapCommand extends Command
 
             $this->info("   📝 Content length: " . strlen($content) . " chars");
 
-            // Generate recap with Ollama
-            $recap = $this->ollama->generateRecap($systemPrompt, $content);
+            $options = [
+                // Some LM Studio servers only support text response_format.
+                'response_format' => ['type' => 'text'],
+            ];
+            $recapModel = $this->getRecapModelOverride();
+            if ($recapModel !== null) {
+                $options['model'] = $recapModel;
+            }
 
-            if ($recap === null || empty($recap)) {
-                $this->error("   ❌ Recap generation failed");
-                Log::error('🤖 [Stage2:Recap] Recap generation failed', [
+            $response = $this->openAi->chat(
+                messages: [
+                    ['role' => 'system', 'content' => $systemPrompt],
+                    ['role' => 'user', 'content' => $content],
+                ],
+                options: $options,
+            );
+
+            $raw = (string) ($response['content'] ?? '');
+
+            if ($raw === '') {
+                $this->error("   ❌ AI generation failed");
+                Log::error('🤖 [Stage2:ProductFields] Generation failed', [
                     'page_id' => $page->id,
+                    'error' => $response['error'] ?? null,
                 ]);
                 return false;
             }
 
-            // Save recap
-            $page->update([
-                'recap_content' => $recap,
-                'recap_generated_at' => now(),
+            $parsed = $this->jsonParser->parseWithKeys($raw, [
+                'product_summary',
+                'product_summary_specs',
+                'product_abilities',
+                'product_predicted_search_text',
             ]);
 
-            $this->info("   ✅ Recap generated (" . strlen($recap) . " chars)");
+            if ($parsed === null) {
+                $this->error('   ❌ Invalid JSON response (missing keys / parse failed)');
+                Log::warning('🤖 [Stage2:ProductFields] Invalid JSON response', [
+                    'page_id' => $page->id,
+                    'response_preview' => substr($raw, 0, 500),
+                ]);
+                return false;
+            }
+
+            $productSummary = $this->normalizeNullableText($parsed['product_summary'] ?? null);
+            $productSpecs = $this->normalizeNullableText($parsed['product_summary_specs'] ?? null);
+            $productAbilities = $this->normalizeNullableText($parsed['product_abilities'] ?? null);
+            $predictedSearch = $this->normalizePredictedSearchText($parsed['product_predicted_search_text'] ?? null);
+
+            if ($productSummary === null || $productSpecs === null || $productAbilities === null || $predictedSearch === null) {
+                $this->error('   ❌ Parsed JSON contains empty required fields');
+                Log::warning('🤖 [Stage2:ProductFields] Empty fields after normalization', [
+                    'page_id' => $page->id,
+                    'has_product_summary' => $productSummary !== null,
+                    'has_product_specs' => $productSpecs !== null,
+                    'has_product_abilities' => $productAbilities !== null,
+                    'has_predicted_search' => $predictedSearch !== null,
+                ]);
+                return false;
+            }
+
+            // Save product fields (do NOT touch recap_content)
+            $page->update([
+                'product_summary' => $productSummary,
+                'product_summary_specs' => $productSpecs,
+                'product_abilities' => $productAbilities,
+                'product_predicted_search_text' => $predictedSearch,
+            ]);
+
+            $this->info("   ✅ Product fields generated");
 
             $totalTime = round((microtime(true) - $startTime) * 1000);
             $this->info("   ⏱️  Total time: {$totalTime}ms");
 
-            Log::info('🤖 [Stage2:Recap] ✅ Completed', [
+            Log::info('🤖 [Stage2:ProductFields] ✅ Completed', [
                 'page_id' => $page->id,
-                'recap_length' => strlen($recap),
                 'total_time_ms' => $totalTime,
             ]);
 
@@ -230,13 +268,110 @@ class GeneratePageRecapCommand extends Command
 
         } catch (\Throwable $e) {
             $this->error("   ❌ Exception: " . $e->getMessage());
-            Log::error('🤖 [Stage2:Recap] Exception', [
+            Log::error('🤖 [Stage2:ProductFields] Exception', [
                 'page_id' => $page->id,
                 'error' => $e->getMessage(),
                 'trace' => $e->getTraceAsString(),
             ]);
             return false;
         }
+    }
+
+    private function getNextPage(int $afterId, ?string $domain): ?Page
+    {
+        return $this->candidates->nextCandidate(
+            afterId: $afterId,
+            domain: $domain,
+            configure: function (Builder $query): void {
+                $query
+                    ->whereNotNull('content_with_tags_purified')
+                    ->whereNotNull('last_crawled_at')
+                    ->where(static function (Builder $q): void {
+                        $q->where('is_product', true)
+                            ->orWhere('page_type', Page::TYPE_PRODUCT);
+                    })
+                    ->where(static function (Builder $q): void {
+                        $q->whereNull('product_summary')
+                            ->orWhereNull('product_summary_specs')
+                            ->orWhereNull('product_abilities')
+                            ->orWhereNull('product_predicted_search_text')
+                            ->orWhere('product_summary', '')
+                            ->orWhere('product_summary_specs', '')
+                            ->orWhere('product_abilities', '')
+                            ->orWhere('product_predicted_search_text', '');
+                    })
+                    ->orderBy('last_crawled_at', 'desc');
+            },
+        );
+    }
+
+    private function isProductPage(Page $page): bool
+    {
+        return $page->is_product === true || $page->page_type === Page::TYPE_PRODUCT;
+    }
+
+    private function getRecapModelOverride(): ?string
+    {
+        $model = trim((string) env('LM_STUDIO_RECAP_MODEL', ''));
+
+        return $model !== '' ? $model : null;
+    }
+
+    private function normalizeNullableText(mixed $value): ?string
+    {
+        if ($value === null) {
+            return null;
+        }
+
+        if (is_array($value) || is_object($value) || is_bool($value)) {
+            return null;
+        }
+
+        $s = trim((string) $value);
+        if ($s === '') {
+            return null;
+        }
+
+        return $s;
+    }
+
+    /**
+     * Normalize predicted search queries into a single comma-separated line.
+     * Must be 5-10 queries, comma-separated.
+     */
+    private function normalizePredictedSearchText(mixed $value): ?string
+    {
+        $s = $this->normalizeNullableText($value);
+        if ($s === null) {
+            return null;
+        }
+
+        $s = str_replace(["\r\n", "\n", "\r", ';'], ',', $s);
+
+        $rawParts = array_map('trim', explode(',', $s));
+
+        $seen = [];
+        $queries = [];
+        foreach ($rawParts as $part) {
+            if ($part === '') {
+                continue;
+            }
+            $key = mb_strtolower($part, 'UTF-8');
+            if (isset($seen[$key])) {
+                continue;
+            }
+            $seen[$key] = true;
+            $queries[] = $part;
+            if (count($queries) >= 10) {
+                break;
+            }
+        }
+
+        if (count($queries) < 5) {
+            return null;
+        }
+
+        return implode(', ', $queries);
     }
 
     private function logSeparator(string $char = '═'): void

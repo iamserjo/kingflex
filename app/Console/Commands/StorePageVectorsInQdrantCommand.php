@@ -20,12 +20,13 @@ use RuntimeException;
  * Store product-page vectors (built from product recap fields) into Qdrant and mark pages.qdstored_at.
  *
  * Eligibility:
- * - is_product = true
- * - is_product_available = true
- * - product_type_id IS NOT NULL
+ * - Page looks like a product page (is_product=true OR page_type=product)
  * - product_summary_specs IS NOT NULL/empty
  * - product_abilities IS NOT NULL/empty
  * - product_predicted_search_text IS NOT NULL/empty
+ *
+ * Note: we intentionally do NOT require is_product_available/product_type_id here,
+ * because `page:recap` can run before `page:product-type-detect`.
  */
 final class StorePageVectorsInQdrantCommand extends Command
 {
@@ -226,9 +227,10 @@ final class StorePageVectorsInQdrantCommand extends Command
     {
         /** @var Builder<Page> $query */
         $query = Page::query()
-            ->where('is_product', true)
-            ->where('is_product_available', true)
-            ->whereNotNull('product_type_id')
+            ->where(static function (Builder $q): void {
+                $q->where('is_product', true)
+                    ->orWhere('page_type', Page::TYPE_PRODUCT);
+            })
             ->whereNotNull('product_summary_specs')
             ->whereNotNull('product_abilities')
             ->whereNotNull('product_predicted_search_text')

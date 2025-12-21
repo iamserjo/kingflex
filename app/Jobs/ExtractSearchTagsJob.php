@@ -104,9 +104,9 @@ class ExtractSearchTagsJob implements ShouldQueue
             $parts[] = "Title: {$this->page->title}";
         }
 
-        // Add summary if available
-        if (!empty($this->page->summary)) {
-            $parts[] = "Summary: {$this->page->summary}";
+        // Add product summary if available (legacy: was pages.summary)
+        if (!empty($this->page->product_summary)) {
+            $parts[] = "Summary: {$this->page->product_summary}";
         }
 
         // Add page type

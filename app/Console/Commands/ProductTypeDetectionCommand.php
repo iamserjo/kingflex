@@ -7,6 +7,7 @@ namespace App\Console\Commands;
 use App\Models\Page;
 use App\Services\Json\JsonParserService;
 use App\Services\LmStudioOpenApi\LmStudioOpenApiService;
+use App\Services\Pages\PageProductTypeCandidateService;
 use App\Services\Redis\PageLockService;
 use App\Services\TypeStructure\TypeStructureService;
 use Illuminate\Console\Command;
@@ -33,13 +34,14 @@ final class ProductTypeDetectionCommand extends Command
 
     protected $description = 'Detect is_product, availability, and product_type_id for pages using screenshot + OpenAI-compatible API';
 
-    private const string STAGE = 'product_type';
+    private const  STAGE = 'product_type';
 
     public function __construct(
         private readonly LmStudioOpenApiService $openAi,
         private readonly PageLockService $lockService,
         private readonly JsonParserService $jsonParser,
         private readonly TypeStructureService $typeStructureService,
+        private readonly PageProductTypeCandidateService $candidates,
     ) {
         parent::__construct();
     }
@@ -133,37 +135,11 @@ final class ProductTypeDetectionCommand extends Command
 
     private function getNextPage(int $afterId, ?string $domain, bool $force): ?Page
     {
-        /** @var Builder<Page> $query */
-        $query = Page::query()
-            ->where('id', '>', $afterId)
-            ->whereNotNull('screenshot_path')
-            ->whereNotNull('last_crawled_at')
-            ->orderBy('id');
-
-        if (!$force) {
-            // Default behavior: process new pages, PLUS backfill pages that were already detected
-            // but ended up with product_type_id = null (common when type mapping logic changed).
-            $query->where(function (Builder $q) {
-                $q->whereNull('product_type_detected_at')
-                    ->orWhere(function (Builder $q2) {
-                        $q2->where('is_product', true)
-                            ->whereNotNull('product_type_detected_at')
-                            ->whereNull('product_type_id');
-                    })
-                    // Backfill obvious filter/listing URLs that were previously misclassified as products.
-                    ->orWhere(function (Builder $q3) {
-                        $q3->whereNotNull('product_type_detected_at')
-                            ->where('is_product', true)
-                            ->where('url', 'like', '%/ch-%');
-                    });
-            });
-        }
-
-        if ($domain) {
-            $query->whereHas('domain', fn ($q) => $q->where('domain', $domain));
-        }
-
-        return $query->first();
+        return $this->candidates->nextCandidate(
+            afterId: $afterId,
+            domain: $domain,
+            force: $force,
+        );
     }
 
     private function processPage(Page $page, int $maxAttempts, int $sleepMs): bool
@@ -657,13 +633,13 @@ final class ProductTypeDetectionCommand extends Command
     {
         // First attempt: convert encoding to fix malformed UTF-8
         $sanitized = mb_convert_encoding($text, 'UTF-8', 'UTF-8');
-        
+
         // Second attempt: use iconv with //IGNORE to remove invalid sequences
         $sanitized = iconv('UTF-8', 'UTF-8//IGNORE', $sanitized);
-        
+
         // Third attempt: remove null bytes and other control characters that might cause issues
         $sanitized = preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/u', '', $sanitized);
-        
+
         return $sanitized ?: '';
     }
 
@@ -844,6 +820,7 @@ final class ProductTypeDetectionCommand extends Command
         $this->line(str_repeat($char, 60));
     }
 }
+
 
 
 

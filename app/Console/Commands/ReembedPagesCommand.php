@@ -123,7 +123,7 @@ class ReembedPagesCommand extends Command
 
     /**
      * Build text for embedding.
-     * Prefers recap_content, then title + summary, then content_with_tags_purified.
+     * Prefers recap_content, then title + product_summary, then content_with_tags_purified.
      */
     private function buildText(Page $page): string
     {
@@ -135,8 +135,8 @@ class ReembedPagesCommand extends Command
         if (!empty($page->title)) {
             $parts[] = $page->title;
         }
-        if (!empty($page->summary)) {
-            $parts[] = $page->summary;
+        if (!empty($page->product_summary)) {
+            $parts[] = $page->product_summary;
         }
         if (!empty($page->content_with_tags_purified)) {
             $parts[] = $page->content_with_tags_purified;

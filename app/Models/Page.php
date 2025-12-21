@@ -21,7 +21,10 @@ use Illuminate\Database\Eloquent\Relations\HasOne;
  * @property string $url_hash
  * @property string|null $title
  * @property string|null $meta_description
- * @property string|null $summary
+ * @property string|null $product_summary
+ * @property string|null $product_summary_specs
+ * @property string|null $product_abilities
+ * @property string|null $product_predicted_search_text
  * @property string|null $recap_content
  * @property array|null $keywords
  * @property string|null $page_type
@@ -45,11 +48,13 @@ use Illuminate\Database\Eloquent\Relations\HasOne;
  * @property string|null $sku
  * @property string|null $product_model_number
  * @property Carbon|null $attributes_extracted_at
+ * @property Carbon|null $qdstored_at
  * @property array|null $embedding
  * @property Carbon $created_at
  * @property Carbon $updated_at
  *
  * @property-read Domain $domain
+ * @property-read TypeStructure|null $productType
  * @property-read Collection<int, PageLink> $inboundLinks
  * @property-read Collection<int, PageLink> $outboundLinks
  * @property-read Collection<int, PageScreenshot> $screenshots
@@ -80,7 +85,10 @@ class Page extends Model
         'url_hash',
         'title',
         'meta_description',
-        'summary',
+        'product_summary',
+        'product_summary_specs',
+        'product_abilities',
+        'product_predicted_search_text',
         'recap_content',
         'keywords',
         'page_type',
@@ -90,6 +98,7 @@ class Page extends Model
         'last_crawled_at',
         'recap_generated_at',
         'embedding_generated_at',
+        'qdstored_at',
         'processing_started_at',
         'raw_html',
         'content_with_tags_purified',
@@ -123,6 +132,7 @@ class Page extends Model
             'screenshot_taken_at' => 'datetime',
             'recap_generated_at' => 'datetime',
             'embedding_generated_at' => 'datetime',
+            'qdstored_at' => 'datetime',
             'processing_started_at' => 'datetime',
             'is_product' => 'boolean',
             'is_product_available' => 'boolean',
@@ -156,6 +166,16 @@ class Page extends Model
     public function domain(): BelongsTo
     {
         return $this->belongsTo(Domain::class);
+    }
+
+    /**
+     * Type structure inferred for this product page.
+     *
+     * @return BelongsTo<TypeStructure, $this>
+     */
+    public function productType(): BelongsTo
+    {
+        return $this->belongsTo(TypeStructure::class, 'product_type_id');
     }
 
     /**

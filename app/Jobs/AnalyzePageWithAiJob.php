@@ -156,9 +156,9 @@ class AnalyzePageWithAiJob implements ShouldQueue
      */
     private function updatePageWithResults(array $result): void
     {
-        $this->page->update([
+        $pageType = $result['page_type'] ?? null;
+        $update = [
             'title' => $result['title'] ?? $this->page->title,
-            'summary' => $result['summary'] ?? null,
             'keywords' => $result['keywords'] ?? null,
             'page_type' => $result['page_type'] ?? Page::TYPE_OTHER,
             'metadata' => [
@@ -166,7 +166,15 @@ class AnalyzePageWithAiJob implements ShouldQueue
                 'language' => $result['language'] ?? null,
                 'analyzed_at' => now()->toISOString(),
             ],
-        ]);
+        ];
+
+        // Legacy field rename: pages.summary -> pages.product_summary
+        // Store only for product pages to avoid polluting non-product records.
+        if ($pageType === Page::TYPE_PRODUCT) {
+            $update['product_summary'] = $result['summary'] ?? null;
+        }
+
+        $this->page->update($update);
     }
 
     /**

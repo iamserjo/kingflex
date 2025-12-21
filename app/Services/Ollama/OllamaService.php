@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace App\Services\Ollama;
 
+use App\Models\AiRequestLog;
+use App\Services\Ai\AiRequestLogger;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -57,6 +59,10 @@ class OllamaService
         $path = '/api/chat';
         $url = $this->baseUrl . $path;
 
+        /** @var AiRequestLogger $aiLogger */
+        $aiLogger = app(AiRequestLogger::class);
+        $aiCtx = null;
+
         Log::debug('📤 Sending request to Ollama', [
             'url' => $url,
             'model' => $model,
@@ -74,6 +80,15 @@ class OllamaService
                 ],
             ];
 
+            $aiCtx = $aiLogger->start(
+                provider: AiRequestLog::PROVIDER_OLLAMA,
+                httpMethod: 'POST',
+                baseUrl: $this->baseUrl,
+                path: $path,
+                model: (string) $model,
+                requestPayload: $requestBody,
+            );
+
             $response = $this->client()->post($path, $requestBody);
 
             if (!$response->successful()) {
@@ -84,6 +99,18 @@ class OllamaService
                     'status' => $response->status(),
                     'body' => $errorBody,
                 ]);
+
+                $aiLogger->finishError(
+                    ctx: $aiCtx,
+                    statusCode: $response->status(),
+                    message: 'HTTP ' . $response->status() . ' error',
+                    responseBody: $errorBody,
+                    responsePayload: $response->json(),
+                    usage: null,
+                    errorContext: [
+                        'type' => 'http_error',
+                    ],
+                );
 
                 return [
                     'content' => '',
@@ -108,6 +135,14 @@ class OllamaService
             // Ollama returns the assistant message in 'message' field
             $content = $data['message']['content'] ?? '';
 
+            $aiLogger->finishSuccess(
+                ctx: $aiCtx,
+                statusCode: $response->status(),
+                responsePayload: $data,
+                responseBody: $response->body(),
+                usage: null,
+            );
+
             return [
                 'content' => $content,
                 'model' => $data['model'] ?? $model,
@@ -119,6 +154,19 @@ class OllamaService
                 'message' => $e->getMessage(),
                 'trace' => $e->getTraceAsString(),
             ]);
+
+            $aiLogger->finishError(
+                ctx: $aiCtx,
+                statusCode: 0,
+                message: $e->getMessage(),
+                responseBody: null,
+                responsePayload: null,
+                usage: null,
+                errorContext: [
+                    'type' => 'exception',
+                    'exception_class' => $e::class,
+                ],
+            );
 
             return [
                 'content' => '',

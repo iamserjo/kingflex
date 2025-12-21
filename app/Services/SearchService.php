@@ -123,7 +123,7 @@ class SearchService
         // <=> operator returns cosine distance (0 = identical, 2 = opposite)
         $pages = Page::query()
             ->whereNotNull('embedding')
-            ->selectRaw('id, url, title, summary, recap_content, page_type, embedding <=> ? as distance', [$embeddingString])
+            ->selectRaw('id, url, title, product_summary as summary, recap_content, page_type, embedding <=> ? as distance', [$embeddingString])
             ->orderBy('distance')
             ->limit(self::MAX_RESULTS * 2) // Get more to filter by threshold
             ->get();

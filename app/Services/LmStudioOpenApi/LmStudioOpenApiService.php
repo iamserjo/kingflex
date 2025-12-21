@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace App\Services\LmStudioOpenApi;
 
+use App\Models\AiRequestLog;
+use App\Services\Ai\AiRequestLogger;
 use App\Services\Json\JsonParserService;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Support\Facades\Http;
@@ -66,6 +68,10 @@ class LmStudioOpenApiService
 
         $model = (string) ($options['model'] ?? $this->model);
 
+        /** @var AiRequestLogger $aiLogger */
+        $aiLogger = app(AiRequestLogger::class);
+        $aiCtx = null;
+
         try {
             $body = [
                 'model' => $model,
@@ -84,8 +90,18 @@ class LmStudioOpenApiService
                 'model' => $model,
             ]);
 
+            $aiCtx = $aiLogger->start(
+                provider: AiRequestLog::PROVIDER_OPENAI_COMPATIBLE,
+                httpMethod: 'POST',
+                baseUrl: $this->baseUrl,
+                path: '/chat/completions',
+                model: $model,
+                requestPayload: $body,
+            );
+
             $response = $this->client()->post('/chat/completions', $body);
             $data = $response->json();
+            $usage = is_array($data) ? ($data['usage'] ?? []) : [];
 
             // Some OpenAI-compatible servers return HTTP 200 with {"error": "..."} body
             if (is_array($data) && isset($data['error'])) {
@@ -96,6 +112,18 @@ class LmStudioOpenApiService
                 Log::error('❌ LM Studio OpenAPI error (body)', [
                     'error' => $data['error'],
                 ]);
+
+                $aiLogger->finishError(
+                    ctx: $aiCtx,
+                    statusCode: $response->status(),
+                    message: $message,
+                    responseBody: $response->body(),
+                    responsePayload: $data,
+                    usage: $usage,
+                    errorContext: [
+                        'type' => 'api_error_body',
+                    ],
+                );
 
                 return [
                     'content' => '',
@@ -117,6 +145,18 @@ class LmStudioOpenApiService
                     'body' => $response->body(),
                 ]);
 
+                $aiLogger->finishError(
+                    ctx: $aiCtx,
+                    statusCode: $response->status(),
+                    message: 'LM Studio OpenAPI request failed',
+                    responseBody: $response->body(),
+                    responsePayload: is_array($data) ? $data : null,
+                    usage: $usage,
+                    errorContext: [
+                        'type' => 'http_error',
+                    ],
+                );
+
                 return [
                     'content' => '',
                     'model' => $model,
@@ -133,6 +173,18 @@ class LmStudioOpenApiService
 
             $content = (string) ($data['choices'][0]['message']['content'] ?? '');
             if ($content === '') {
+                $aiLogger->finishError(
+                    ctx: $aiCtx,
+                    statusCode: $response->status(),
+                    message: 'LM Studio OpenAPI returned empty assistant content',
+                    responseBody: $response->body(),
+                    responsePayload: $data,
+                    usage: $usage,
+                    errorContext: [
+                        'type' => 'empty_content',
+                    ],
+                );
+
                 return [
                     'content' => '',
                     'model' => (string) ($data['model'] ?? $model),
@@ -147,6 +199,14 @@ class LmStudioOpenApiService
                 ];
             }
 
+            $aiLogger->finishSuccess(
+                ctx: $aiCtx,
+                statusCode: $response->status(),
+                responsePayload: $data,
+                responseBody: $response->body(),
+                usage: $usage,
+            );
+
             return [
                 'content' => $content,
                 'model' => (string) ($data['model'] ?? $model),
@@ -156,6 +216,19 @@ class LmStudioOpenApiService
             Log::error('❌ LM Studio OpenAPI exception', [
                 'message' => $e->getMessage(),
             ]);
+
+            $aiLogger->finishError(
+                ctx: $aiCtx,
+                statusCode: null,
+                message: $e->getMessage(),
+                responseBody: null,
+                responsePayload: null,
+                usage: null,
+                errorContext: [
+                    'type' => 'exception',
+                    'exception_class' => $e::class,
+                ],
+            );
 
             return [
                 'content' => '',

@@ -8,6 +8,7 @@ use App\Models\Page;
 use App\Models\TypeStructure;
 use App\Services\Json\JsonParserService;
 use App\Services\LmStudioOpenApi\LmStudioOpenApiService;
+use App\Services\Pages\PageAttributesCandidateService;
 use App\Services\Redis\PageLockService;
 use Illuminate\Console\Command;
 use Illuminate\Database\Eloquent\Builder;
@@ -42,6 +43,7 @@ final class ExtractPageAttributesCommand extends Command
     public function __construct(
         private readonly LmStudioOpenApiService $openAi,
         private readonly PageLockService $lockService,
+        private readonly PageAttributesCandidateService $candidates,
     ) {
         parent::__construct();
 
@@ -158,24 +160,11 @@ final class ExtractPageAttributesCommand extends Command
 
     private function getNextPage(int $afterId, ?string $domain, bool $force): ?Page
     {
-        /** @var Builder<Page> $query */
-        $query = Page::query()
-            ->where('id', '>', $afterId)
-            ->where('is_product', true)
-            ->where('is_product_available', true)
-            ->whereNotNull('content_with_tags_purified')
-            ->whereNotNull('product_type_id')
-            ->orderBy('id');
-
-        if (!$force) {
-            $query->whereNull('attributes_extracted_at');
-        }
-
-        if ($domain) {
-            $query->whereHas('domain', fn ($q) => $q->where('domain', $domain));
-        }
-
-        return $query->first();
+        return $this->candidates->nextCandidate(
+            afterId: $afterId,
+            domain: $domain,
+            force: $force,
+        );
     }
 
     private function processPage(Page $page, bool $force, int $maxAttempts, int $sleepMs): bool
@@ -447,6 +436,7 @@ final class ExtractPageAttributesCommand extends Command
         $this->line(str_repeat($char, 60));
     }
 }
+
 
 
 

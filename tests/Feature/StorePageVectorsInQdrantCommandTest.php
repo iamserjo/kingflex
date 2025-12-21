@@ -199,4 +199,57 @@ test('page:qdstore skips pages without product recap fields', function () {
     expect($exit)->toBe(0);
 });
 
+test('page:qdstore treats page as eligible after page:recap even if product availability/type are not detected yet', function () {
+    $domain = Domain::query()->create([
+        'domain' => 'shop.test',
+        'is_active' => true,
+    ]);
+
+    $page = Page::query()->create([
+        'domain_id' => $domain->id,
+        'url' => 'https://shop.test/product/recapped-but-not-detected-yet',
+        'title' => 'Recapped Product',
+        'last_crawled_at' => now(),
+        // Important: product-type detection not done yet:
+        'is_product' => null,
+        'is_product_available' => null,
+        'product_type_id' => null,
+        // But page:recap already generated product fields:
+        'page_type' => Page::TYPE_PRODUCT,
+        'product_summary_specs' => 'Specs.',
+        'product_abilities' => 'Abilities.',
+        'product_predicted_search_text' => 'q1, q2, q3, q4, q5',
+    ]);
+
+    $openRouter = Mockery::mock(OpenRouterService::class);
+    $openRouter->shouldReceive('isConfigured')->andReturnTrue();
+    $openRouter->shouldReceive('createEmbedding')
+        ->once()
+        ->andReturn([0.1, 0.2, 0.3]);
+    app()->instance(OpenRouterService::class, $openRouter);
+
+    Http::fake(function (Request $request) {
+        $url = $request->url();
+
+        if ($url === 'http://qdrant.test/collections/pages' && $request->method() === 'GET') {
+            return Http::response([], 200);
+        }
+        if (str_starts_with($url, 'http://qdrant.test/collections/pages/points') && $request->method() === 'PUT') {
+            return Http::response(['result' => true], 200);
+        }
+
+        return Http::response('not faked', 500);
+    });
+
+    $exit = Artisan::call('page:qdstore', [
+        '--limit' => 1,
+        '--attempts' => 1,
+    ]);
+
+    expect($exit)->toBe(0);
+
+    $page->refresh();
+    expect($page->qdstored_at)->not->toBeNull();
+});
+
 

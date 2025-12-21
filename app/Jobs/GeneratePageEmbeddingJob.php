@@ -58,7 +58,7 @@ class GeneratePageEmbeddingJob implements ShouldQueue
             'url' => $this->page->url,
             'page_type' => $this->page->page_type,
             'has_title' => !empty($this->page->title),
-            'has_summary' => !empty($this->page->summary),
+            'has_product_summary' => !empty($this->page->product_summary),
         ]);
 
         // Prepare text for embedding
@@ -107,9 +107,9 @@ class GeneratePageEmbeddingJob implements ShouldQueue
             $parts[] = "Title: {$this->page->title}";
         }
 
-        // Add summary
-        if (!empty($this->page->summary)) {
-            $parts[] = "Summary: {$this->page->summary}";
+        // Add product summary (legacy: was pages.summary)
+        if (!empty($this->page->product_summary)) {
+            $parts[] = "Summary: {$this->page->product_summary}";
         }
 
         // Add keywords
