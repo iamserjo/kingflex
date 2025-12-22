@@ -8,6 +8,7 @@ use App\Models\Page;
 use App\Services\Json\JsonParserService;
 use App\Services\LmStudioOpenApi\LmStudioOpenApiService;
 use App\Services\Pages\PageCandidateFinderService;
+use App\Services\Pages\PageScreenshotDataUrlService;
 use App\Services\Redis\PageLockService;
 use Illuminate\Console\Command;
 use Illuminate\Database\Eloquent\Builder;
@@ -38,6 +39,7 @@ class GeneratePageRecapCommand extends Command
         private readonly PageLockService $lockService,
         private readonly PageCandidateFinderService $candidates,
         private readonly JsonParserService $jsonParser,
+        private readonly PageScreenshotDataUrlService $screenshotDataUrl,
     ) {
         parent::__construct();
     }
@@ -152,6 +154,15 @@ class GeneratePageRecapCommand extends Command
             return true;
         }
 
+        if (empty($page->screenshot_path)) {
+            $this->warn('   ⚠️  screenshot_path is empty; skipping (vision required)');
+            Log::warning('🤖 [Stage2:ProductFields] Skipped (missing screenshot_path)', [
+                'page_id' => $page->id,
+                'url' => $page->url,
+            ]);
+            return false;
+        }
+
         Log::info('🤖 [Stage2:ProductFields] Starting generation', [
             'page_id' => $page->id,
             'url' => $page->url,
@@ -161,7 +172,7 @@ class GeneratePageRecapCommand extends Command
             // Load system prompt
             $systemPrompt = view('ai-prompts.product-recap-fields')->render();
 
-            // Build content for AI
+            // Build minimal text context for AI (screenshot is the primary signal)
             $parts = [];
             $parts[] = "URL: {$page->url}";
 
@@ -173,8 +184,12 @@ class GeneratePageRecapCommand extends Command
                 $parts[] = "Description: {$page->meta_description}";
             }
 
-            $parts[] = "\n=== VISIBLE CONTENT ON THE PAGE ===";
-            $parts[] = $page->content_with_tags_purified;
+            if (!empty($page->content_with_tags_purified)) {
+                $preview = $this->buildContentPreview((string) $page->content_with_tags_purified, 2500);
+                if ($preview !== '') {
+                    $parts[] = "Content preview: {$preview}";
+                }
+            }
 
             $content = implode("\n", $parts);
 
@@ -185,6 +200,16 @@ class GeneratePageRecapCommand extends Command
 
             $this->info("   📝 Content length: " . strlen($content) . " chars");
 
+            $imageDataUrl = $this->screenshotDataUrl->forPage($page);
+            if ($imageDataUrl === null) {
+                $this->warn('   ⚠️  Screenshot file does not exist; skipping');
+                Log::warning('🤖 [Stage2:ProductFields] Screenshot missing on disk', [
+                    'page_id' => $page->id,
+                    'screenshot_path' => $page->screenshot_path,
+                ]);
+                return false;
+            }
+
             $options = [
                 // Some LM Studio servers only support text response_format.
                 'response_format' => ['type' => 'text'],
@@ -194,11 +219,10 @@ class GeneratePageRecapCommand extends Command
                 $options['model'] = $recapModel;
             }
 
-            $response = $this->openAi->chat(
-                messages: [
-                    ['role' => 'system', 'content' => $systemPrompt],
-                    ['role' => 'user', 'content' => $content],
-                ],
+            $response = $this->openAi->chatWithImage(
+                systemPrompt: (string) $systemPrompt,
+                userText: $content,
+                imageDataUrl: $imageDataUrl,
                 options: $options,
             );
 
@@ -285,6 +309,7 @@ class GeneratePageRecapCommand extends Command
             configure: function (Builder $query): void {
                 $query
                     ->whereNotNull('content_with_tags_purified')
+                    ->whereNotNull('screenshot_path')
                     ->whereNotNull('last_crawled_at')
                     ->where(static function (Builder $q): void {
                         $q->where('is_product', true)
@@ -377,6 +402,19 @@ class GeneratePageRecapCommand extends Command
     private function logSeparator(string $char = '═'): void
     {
         $this->line(str_repeat($char, 60));
+    }
+
+    private function buildContentPreview(string $contentWithTagsPurified, int $maxChars): string
+    {
+        $text = strip_tags($contentWithTagsPurified);
+        $text = preg_replace('/\s+/u', ' ', $text) ?? $text;
+        $text = trim($text);
+
+        if ($text === '') {
+            return '';
+        }
+
+        return mb_substr($text, 0, max(1, $maxChars), 'UTF-8');
     }
 }
 

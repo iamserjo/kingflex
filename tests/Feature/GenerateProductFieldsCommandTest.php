@@ -6,6 +6,7 @@ use App\Services\LmStudioOpenApi\LmStudioOpenApiService;
 use App\Services\Redis\PageLockService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\Storage;
 
 uses(RefreshDatabase::class);
 
@@ -18,10 +19,19 @@ beforeEach(function () {
 });
 
 test('page:recap --page generates product fields and normalizes predicted search queries', function () {
+    Storage::fake('local');
+
     $domain = Domain::query()->create([
         'domain' => 'shop.test',
         'is_active' => true,
     ]);
+
+    $screenshotPath = 'screenshots/test-page-recap.png';
+    Storage::disk('local')->put($screenshotPath, base64_decode(
+        // 1x1 PNG
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO2o2V8AAAAASUVORK5CYII=',
+        true
+    ) ?: '');
 
     $page = Page::query()->create([
         'domain_id' => $domain->id,
@@ -32,13 +42,14 @@ test('page:recap --page generates product fields and normalizes predicted search
         'is_product' => true,
         'content_with_tags_purified' => '<main>Super Phone 128GB OLED</main>',
         'last_crawled_at' => now(),
+        'screenshot_path' => $screenshotPath,
     ]);
 
     $openAi = \Mockery::mock(LmStudioOpenApiService::class);
     $openAi->shouldReceive('isConfigured')->andReturnTrue();
     $openAi->shouldReceive('getBaseUrl')->andReturn('http://lmstudio.test');
     $openAi->shouldReceive('getModel')->andReturn('test-model');
-    $openAi->shouldReceive('chat')
+    $openAi->shouldReceive('chatWithImage')
         ->once()
         ->andReturn([
             'content' => '{"product_summary":"A great phone.","product_summary_specs":"128GB; OLED.","product_abilities":"Calls, photos.","product_predicted_search_text":"buy super phone, Super Phone price\\nSuper phone 128gb; super phone OLED, super phone review, buy super phone"}',
@@ -62,6 +73,8 @@ test('page:recap --page generates product fields and normalizes predicted search
 });
 
 test('page:recap --page skips non-product pages and does not write product fields', function () {
+    Storage::fake('local');
+
     $domain = Domain::query()->create([
         'domain' => 'example.test',
         'is_active' => true,
@@ -81,7 +94,7 @@ test('page:recap --page skips non-product pages and does not write product field
     $openAi->shouldReceive('isConfigured')->andReturnTrue();
     $openAi->shouldReceive('getBaseUrl')->andReturn('http://lmstudio.test');
     $openAi->shouldReceive('getModel')->andReturn('test-model');
-    $openAi->shouldNotReceive('chat');
+    $openAi->shouldNotReceive('chatWithImage');
     app()->instance(LmStudioOpenApiService::class, $openAi);
 
     $exit = Artisan::call('page:recap', [
@@ -98,10 +111,19 @@ test('page:recap --page skips non-product pages and does not write product field
 });
 
 test('page:recap fails if predicted search queries are fewer than 5 after normalization', function () {
+    Storage::fake('local');
+
     $domain = Domain::query()->create([
         'domain' => 'shop2.test',
         'is_active' => true,
     ]);
+
+    $screenshotPath = 'screenshots/test-page-recap-fail.png';
+    Storage::disk('local')->put($screenshotPath, base64_decode(
+        // 1x1 PNG
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO2o2V8AAAAASUVORK5CYII=',
+        true
+    ) ?: '');
 
     $page = Page::query()->create([
         'domain_id' => $domain->id,
@@ -111,13 +133,14 @@ test('page:recap fails if predicted search queries are fewer than 5 after normal
         'is_product' => true,
         'content_with_tags_purified' => '<main>Gadget</main>',
         'last_crawled_at' => now(),
+        'screenshot_path' => $screenshotPath,
     ]);
 
     $openAi = \Mockery::mock(LmStudioOpenApiService::class);
     $openAi->shouldReceive('isConfigured')->andReturnTrue();
     $openAi->shouldReceive('getBaseUrl')->andReturn('http://lmstudio.test');
     $openAi->shouldReceive('getModel')->andReturn('test-model');
-    $openAi->shouldReceive('chat')
+    $openAi->shouldReceive('chatWithImage')
         ->once()
         ->andReturn([
             'content' => '{"product_summary":"Ok.","product_summary_specs":"Specs.","product_abilities":"Abilities.","product_predicted_search_text":"q1, q2, q3, q3"}',
