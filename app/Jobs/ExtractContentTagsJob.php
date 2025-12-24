@@ -8,6 +8,7 @@ use App\Models\Page;
 use App\Models\PageContentTag;
 use App\Services\Html\HtmlSanitizerService;
 use App\Services\OpenRouter\OpenRouterService;
+use App\Services\Storage\PageAssetsStorageService;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -47,7 +48,7 @@ class ExtractContentTagsJob implements ShouldQueue
     /**
      * Execute the job.
      */
-    public function handle(OpenRouterService $openRouter, HtmlSanitizerService $sanitizer): void
+    public function handle(OpenRouterService $openRouter, HtmlSanitizerService $sanitizer, PageAssetsStorageService $assets): void
     {
         if (!$openRouter->isConfigured()) {
             Log::warning('OpenRouter not configured, skipping content tags extraction', [
@@ -62,7 +63,9 @@ class ExtractContentTagsJob implements ShouldQueue
         ]);
 
         $systemPrompt = view('ai-prompts.extract-content-tags')->render();
-        $content = $sanitizer->getForAi($this->page->raw_html ?? '', $this->page->url, 30000);
+        $rawHtmlUrl = (string) ($this->page->raw_html ?? '');
+        $rawHtml = $rawHtmlUrl !== '' ? $assets->getTextFromUrl($rawHtmlUrl) : '';
+        $content = $sanitizer->getForAi($rawHtml, $this->page->url, 30000);
 
         if (empty($content)) {
             Log::warning('No content available for tag extraction', [

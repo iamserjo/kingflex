@@ -19,19 +19,25 @@ beforeEach(function () {
 });
 
 test('page:recap --page generates product fields and normalizes predicted search queries', function () {
-    Storage::fake('local');
+    Storage::fake('s3');
+    config(['filesystems.disks.s3.url' => 'https://s3.test']);
 
     $domain = Domain::query()->create([
         'domain' => 'shop.test',
         'is_active' => true,
     ]);
 
-    $screenshotPath = 'screenshots/test-page-recap.png';
-    Storage::disk('local')->put($screenshotPath, base64_decode(
+    $shotKey = 'tests/screenshots/test-page-recap.png';
+    Storage::disk('s3')->put($shotKey, base64_decode(
         // 1x1 PNG
         'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO2o2V8AAAAASUVORK5CYII=',
         true
     ) ?: '');
+    $shotUrl = Storage::disk('s3')->url($shotKey);
+
+    $contentKey = 'tests/content/test-page-recap.txt';
+    Storage::disk('s3')->put($contentKey, '<main>Super Phone 128GB OLED</main>');
+    $contentUrl = Storage::disk('s3')->url($contentKey);
 
     $page = Page::query()->create([
         'domain_id' => $domain->id,
@@ -40,9 +46,9 @@ test('page:recap --page generates product fields and normalizes predicted search
         'meta_description' => 'Best phone ever',
         'page_type' => Page::TYPE_PRODUCT,
         'is_product' => true,
-        'content_with_tags_purified' => '<main>Super Phone 128GB OLED</main>',
+        'content_with_tags_purified' => $contentUrl,
         'last_crawled_at' => now(),
-        'screenshot_path' => $screenshotPath,
+        'screenshot_path' => $shotUrl,
     ]);
 
     $openAi = \Mockery::mock(LmStudioOpenApiService::class);
@@ -60,6 +66,7 @@ test('page:recap --page generates product fields and normalizes predicted search
 
     $exit = Artisan::call('page:recap', [
         '--page' => $page->id,
+        '--attempts' => 1,
     ]);
 
     expect($exit)->toBe(0);
@@ -73,12 +80,17 @@ test('page:recap --page generates product fields and normalizes predicted search
 });
 
 test('page:recap --page skips non-product pages and does not write product fields', function () {
-    Storage::fake('local');
+    Storage::fake('s3');
+    config(['filesystems.disks.s3.url' => 'https://s3.test']);
 
     $domain = Domain::query()->create([
         'domain' => 'example.test',
         'is_active' => true,
     ]);
+
+    $contentKey = 'tests/content/about.txt';
+    Storage::disk('s3')->put($contentKey, '<main>About us</main>');
+    $contentUrl = Storage::disk('s3')->url($contentKey);
 
     $page = Page::query()->create([
         'domain_id' => $domain->id,
@@ -86,7 +98,7 @@ test('page:recap --page skips non-product pages and does not write product field
         'title' => 'About',
         'page_type' => Page::TYPE_OTHER,
         'is_product' => false,
-        'content_with_tags_purified' => '<main>About us</main>',
+        'content_with_tags_purified' => $contentUrl,
         'last_crawled_at' => now(),
     ]);
 
@@ -99,6 +111,7 @@ test('page:recap --page skips non-product pages and does not write product field
 
     $exit = Artisan::call('page:recap', [
         '--page' => $page->id,
+        '--attempts' => 1,
     ]);
 
     expect($exit)->toBe(0);
@@ -111,19 +124,25 @@ test('page:recap --page skips non-product pages and does not write product field
 });
 
 test('page:recap fails if predicted search queries are fewer than 5 after normalization', function () {
-    Storage::fake('local');
+    Storage::fake('s3');
+    config(['filesystems.disks.s3.url' => 'https://s3.test']);
 
     $domain = Domain::query()->create([
         'domain' => 'shop2.test',
         'is_active' => true,
     ]);
 
-    $screenshotPath = 'screenshots/test-page-recap-fail.png';
-    Storage::disk('local')->put($screenshotPath, base64_decode(
+    $shotKey = 'tests/screenshots/test-page-recap-fail.png';
+    Storage::disk('s3')->put($shotKey, base64_decode(
         // 1x1 PNG
         'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO2o2V8AAAAASUVORK5CYII=',
         true
     ) ?: '');
+    $shotUrl = Storage::disk('s3')->url($shotKey);
+
+    $contentKey = 'tests/content/test-page-recap-fail.txt';
+    Storage::disk('s3')->put($contentKey, '<main>Gadget</main>');
+    $contentUrl = Storage::disk('s3')->url($contentKey);
 
     $page = Page::query()->create([
         'domain_id' => $domain->id,
@@ -131,9 +150,9 @@ test('page:recap fails if predicted search queries are fewer than 5 after normal
         'title' => 'Gadget',
         'page_type' => Page::TYPE_PRODUCT,
         'is_product' => true,
-        'content_with_tags_purified' => '<main>Gadget</main>',
+        'content_with_tags_purified' => $contentUrl,
         'last_crawled_at' => now(),
-        'screenshot_path' => $screenshotPath,
+        'screenshot_path' => $shotUrl,
     ]);
 
     $openAi = \Mockery::mock(LmStudioOpenApiService::class);
@@ -151,6 +170,7 @@ test('page:recap fails if predicted search queries are fewer than 5 after normal
 
     $exit = Artisan::call('page:recap', [
         '--page' => $page->id,
+        '--attempts' => 1,
     ]);
 
     expect($exit)->toBe(1);

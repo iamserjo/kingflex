@@ -21,7 +21,8 @@ beforeEach(function () {
 });
 
 test('command retries until it gets valid JSON and stores only is_product when is_product=false', function () {
-    Storage::fake('local');
+    Storage::fake('s3');
+    config(['filesystems.disks.s3.url' => 'https://s3.test']);
 
     $domain = Domain::query()->create([
         'domain' => 'example.test',
@@ -31,13 +32,15 @@ test('command retries until it gets valid JSON and stores only is_product when i
     // 1x1 transparent PNG
     $png = base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+G2Z0AAAAASUVORK5CYII=', true);
     expect($png)->not->toBeFalse();
-    Storage::disk('local')->put('screenshots/test/not-a-product.png', $png);
+    $shotKey = 'tests/screenshots/not-a-product.png';
+    Storage::disk('s3')->put($shotKey, $png);
+    $shotUrl = Storage::disk('s3')->url($shotKey);
 
     $page = Page::query()->create([
         'domain_id' => $domain->id,
         'url' => 'https://example.test/not-a-product',
         'title' => 'About us',
-        'screenshot_path' => 'screenshots/test/not-a-product.png',
+        'screenshot_path' => $shotUrl,
         'last_crawled_at' => now(),
     ]);
 
@@ -45,6 +48,7 @@ test('command retries until it gets valid JSON and stores only is_product when i
     $openAi->shouldReceive('isConfigured')->andReturnTrue();
     $openAi->shouldReceive('getBaseUrl')->andReturn('http://lmstudio.test');
     $openAi->shouldReceive('getModel')->andReturn('test-model');
+    $openAi->shouldReceive('getVisionModel')->andReturn('test-vision-model');
     $openAi->shouldReceive('chatWithImage')
         ->twice()
         ->andReturn(
@@ -69,7 +73,8 @@ test('command retries until it gets valid JSON and stores only is_product when i
 });
 
 test('command stores availability and product_type_id when is_product=true and type exists', function () {
-    Storage::fake('local');
+    Storage::fake('s3');
+    config(['filesystems.disks.s3.url' => 'https://s3.test']);
 
     $domain = Domain::query()->create([
         'domain' => 'shop.test',
@@ -86,13 +91,15 @@ test('command stores availability and product_type_id when is_product=true and t
     // 1x1 transparent PNG
     $png = base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+G2Z0AAAAASUVORK5CYII=', true);
     expect($png)->not->toBeFalse();
-    Storage::disk('local')->put('screenshots/test/product.png', $png);
+    $shotKey = 'tests/screenshots/product.png';
+    Storage::disk('s3')->put($shotKey, $png);
+    $shotUrl = Storage::disk('s3')->url($shotKey);
 
     $page = Page::query()->create([
         'domain_id' => $domain->id,
         'url' => 'https://shop.test/product/1',
         'title' => 'Super Phone',
-        'screenshot_path' => 'screenshots/test/product.png',
+        'screenshot_path' => $shotUrl,
         'last_crawled_at' => now(),
     ]);
 
@@ -100,6 +107,7 @@ test('command stores availability and product_type_id when is_product=true and t
     $openAi->shouldReceive('isConfigured')->andReturnTrue();
     $openAi->shouldReceive('getBaseUrl')->andReturn('http://lmstudio.test');
     $openAi->shouldReceive('getModel')->andReturn('test-model');
+    $openAi->shouldReceive('getVisionModel')->andReturn('test-vision-model');
     $openAi->shouldReceive('chatWithImage')
         ->once()
         ->andReturn([
@@ -124,7 +132,8 @@ test('command stores availability and product_type_id when is_product=true and t
 });
 
 test('command can map product_type_id when model returns a delimited product_type string', function () {
-    Storage::fake('local');
+    Storage::fake('s3');
+    config(['filesystems.disks.s3.url' => 'https://s3.test']);
 
     $domain = Domain::query()->create([
         'domain' => 'shop2.test',
@@ -141,13 +150,15 @@ test('command can map product_type_id when model returns a delimited product_typ
     // 1x1 transparent PNG
     $png = base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+G2Z0AAAAASUVORK5CYII=', true);
     expect($png)->not->toBeFalse();
-    Storage::disk('local')->put('screenshots/test/product2.png', $png);
+    $shotKey = 'tests/screenshots/product2.png';
+    Storage::disk('s3')->put($shotKey, $png);
+    $shotUrl = Storage::disk('s3')->url($shotKey);
 
     $page = Page::query()->create([
         'domain_id' => $domain->id,
         'url' => 'https://shop2.test/product/1',
         'title' => 'Super Phone 2',
-        'screenshot_path' => 'screenshots/test/product2.png',
+        'screenshot_path' => $shotUrl,
         'last_crawled_at' => now(),
     ]);
 
@@ -155,6 +166,7 @@ test('command can map product_type_id when model returns a delimited product_typ
     $openAi->shouldReceive('isConfigured')->andReturnTrue();
     $openAi->shouldReceive('getBaseUrl')->andReturn('http://lmstudio.test');
     $openAi->shouldReceive('getModel')->andReturn('test-model');
+    $openAi->shouldReceive('getVisionModel')->andReturn('test-vision-model');
     $openAi->shouldReceive('chatWithImage')
         ->once()
         ->andReturn([
@@ -177,7 +189,8 @@ test('command can map product_type_id when model returns a delimited product_typ
 });
 
 test('command creates a new type and attaches it when product_type does not exist (single)', function () {
-    Storage::fake('local');
+    Storage::fake('s3');
+    config(['filesystems.disks.s3.url' => 'https://s3.test']);
 
     $domain = Domain::query()->create([
         'domain' => 'new-type.test',
@@ -198,13 +211,15 @@ test('command creates a new type and attaches it when product_type does not exis
     // 1x1 transparent PNG
     $png = base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+G2Z0AAAAASUVORK5CYII=', true);
     expect($png)->not->toBeFalse();
-    Storage::disk('local')->put('screenshots/test/new-type.png', $png);
+    $shotKey = 'tests/screenshots/new-type.png';
+    Storage::disk('s3')->put($shotKey, $png);
+    $shotUrl = Storage::disk('s3')->url($shotKey);
 
     $page = Page::query()->create([
         'domain_id' => $domain->id,
         'url' => 'https://new-type.test/product/1',
         'title' => 'Mystery Laptop',
-        'screenshot_path' => 'screenshots/test/new-type.png',
+        'screenshot_path' => $shotUrl,
         'last_crawled_at' => now(),
     ]);
 
@@ -212,6 +227,7 @@ test('command creates a new type and attaches it when product_type does not exis
     $openAi->shouldReceive('isConfigured')->andReturnTrue();
     $openAi->shouldReceive('getBaseUrl')->andReturn('http://lmstudio.test');
     $openAi->shouldReceive('getModel')->andReturn('test-model');
+    $openAi->shouldReceive('getVisionModel')->andReturn('test-vision-model');
     $openAi->shouldReceive('chatWithImage')
         ->once()
         ->andReturn([
@@ -241,7 +257,8 @@ test('command creates a new type and attaches it when product_type does not exis
 });
 
 test('command creates a new type and attaches it when product_type is a slash-delimited list', function () {
-    Storage::fake('local');
+    Storage::fake('s3');
+    config(['filesystems.disks.s3.url' => 'https://s3.test']);
 
     $domain = Domain::query()->create([
         'domain' => 'new-type2.test',
@@ -261,13 +278,15 @@ test('command creates a new type and attaches it when product_type is a slash-de
     // 1x1 transparent PNG
     $png = base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+G2Z0AAAAASUVORK5CYII=', true);
     expect($png)->not->toBeFalse();
-    Storage::disk('local')->put('screenshots/test/new-type2.png', $png);
+    $shotKey = 'tests/screenshots/new-type2.png';
+    Storage::disk('s3')->put($shotKey, $png);
+    $shotUrl = Storage::disk('s3')->url($shotKey);
 
     $page = Page::query()->create([
         'domain_id' => $domain->id,
         'url' => 'https://new-type2.test/product/1',
         'title' => 'Ambiguous Device',
-        'screenshot_path' => 'screenshots/test/new-type2.png',
+        'screenshot_path' => $shotUrl,
         'last_crawled_at' => now(),
     ]);
 
@@ -275,6 +294,7 @@ test('command creates a new type and attaches it when product_type is a slash-de
     $openAi->shouldReceive('isConfigured')->andReturnTrue();
     $openAi->shouldReceive('getBaseUrl')->andReturn('http://lmstudio.test');
     $openAi->shouldReceive('getModel')->andReturn('test-model');
+    $openAi->shouldReceive('getVisionModel')->andReturn('test-vision-model');
     $openAi->shouldReceive('chatWithImage')
         ->once()
         ->andReturn([
@@ -304,7 +324,8 @@ test('command creates a new type and attaches it when product_type is a slash-de
 });
 
 test('command backfills pages with product_type_detected_at set but product_type_id missing (without --force)', function () {
-    Storage::fake('local');
+    Storage::fake('s3');
+    config(['filesystems.disks.s3.url' => 'https://s3.test']);
 
     $domain = Domain::query()->create([
         'domain' => 'backfill.test',
@@ -324,13 +345,15 @@ test('command backfills pages with product_type_detected_at set but product_type
     // 1x1 transparent PNG
     $png = base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+G2Z0AAAAASUVORK5CYII=', true);
     expect($png)->not->toBeFalse();
-    Storage::disk('local')->put('screenshots/test/backfill.png', $png);
+    $shotKey = 'tests/screenshots/backfill.png';
+    Storage::disk('s3')->put($shotKey, $png);
+    $shotUrl = Storage::disk('s3')->url($shotKey);
 
     $page = Page::query()->create([
         'domain_id' => $domain->id,
         'url' => 'https://backfill.test/product/1',
         'title' => 'Backfill Phone',
-        'screenshot_path' => 'screenshots/test/backfill.png',
+        'screenshot_path' => $shotUrl,
         'last_crawled_at' => now(),
         // Simulate a previously processed product page where mapping failed.
         'is_product' => true,
@@ -343,6 +366,7 @@ test('command backfills pages with product_type_detected_at set but product_type
     $openAi->shouldReceive('isConfigured')->andReturnTrue();
     $openAi->shouldReceive('getBaseUrl')->andReturn('http://lmstudio.test');
     $openAi->shouldReceive('getModel')->andReturn('test-model');
+    $openAi->shouldReceive('getVisionModel')->andReturn('test-vision-model');
     $openAi->shouldReceive('chatWithImage')
         ->once()
         ->andReturn([
@@ -366,7 +390,8 @@ test('command backfills pages with product_type_detected_at set but product_type
 });
 
 test('command forces is_product=false for listing/filter URLs (e.g. /ch-...) even if model says product', function () {
-    Storage::fake('local');
+    Storage::fake('s3');
+    config(['filesystems.disks.s3.url' => 'https://s3.test']);
 
     $domain = Domain::query()->create([
         'domain' => 'ti.ua',
@@ -376,14 +401,16 @@ test('command forces is_product=false for listing/filter URLs (e.g. /ch-...) eve
     // 1x1 transparent PNG
     $png = base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+G2Z0AAAAASUVORK5CYII=', true);
     expect($png)->not->toBeFalse();
-    Storage::disk('local')->put('screenshots/test/listing.png', $png);
+    $shotKey = 'tests/screenshots/listing.png';
+    Storage::disk('s3')->put($shotKey, $png);
+    $shotUrl = Storage::disk('s3')->url($shotKey);
 
     // URL pattern that indicates filter/listing page.
     $page = Page::query()->create([
         'domain_id' => $domain->id,
         'url' => 'https://ti.ua/ua/stabilizatory/ch-proizvoditel-feiyu/',
         'title' => 'Стабілізатори Feiyu',
-        'screenshot_path' => 'screenshots/test/listing.png',
+        'screenshot_path' => $shotUrl,
         'last_crawled_at' => now(),
     ]);
 
@@ -391,6 +418,7 @@ test('command forces is_product=false for listing/filter URLs (e.g. /ch-...) eve
     $openAi->shouldReceive('isConfigured')->andReturnTrue();
     $openAi->shouldReceive('getBaseUrl')->andReturn('http://lmstudio.test');
     $openAi->shouldReceive('getModel')->andReturn('test-model');
+    $openAi->shouldReceive('getVisionModel')->andReturn('test-vision-model');
     $openAi->shouldReceive('chatWithImage')
         ->once()
         ->andReturn([
@@ -416,7 +444,8 @@ test('command forces is_product=false for listing/filter URLs (e.g. /ch-...) eve
 });
 
 test('command treats string availability like \"in stock\" as true', function () {
-    Storage::fake('local');
+    Storage::fake('s3');
+    config(['filesystems.disks.s3.url' => 'https://s3.test']);
 
     $domain = Domain::query()->create([
         'domain' => 'shop-availability.test',
@@ -433,13 +462,15 @@ test('command treats string availability like \"in stock\" as true', function ()
     // 1x1 transparent PNG
     $png = base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+G2Z0AAAAASUVORK5CYII=', true);
     expect($png)->not->toBeFalse();
-    Storage::disk('local')->put('screenshots/test/availability.png', $png);
+    $shotKey = 'tests/screenshots/availability.png';
+    Storage::disk('s3')->put($shotKey, $png);
+    $shotUrl = Storage::disk('s3')->url($shotKey);
 
     $page = Page::query()->create([
         'domain_id' => $domain->id,
         'url' => 'https://shop-availability.test/product/1',
         'title' => 'Xbox Series X',
-        'screenshot_path' => 'screenshots/test/availability.png',
+        'screenshot_path' => $shotUrl,
         'last_crawled_at' => now(),
     ]);
 
@@ -447,6 +478,7 @@ test('command treats string availability like \"in stock\" as true', function ()
     $openAi->shouldReceive('isConfigured')->andReturnTrue();
     $openAi->shouldReceive('getBaseUrl')->andReturn('http://lmstudio.test');
     $openAi->shouldReceive('getModel')->andReturn('test-model');
+    $openAi->shouldReceive('getVisionModel')->andReturn('test-vision-model');
     $openAi->shouldReceive('chatWithImage')
         ->once()
         ->andReturn([
@@ -468,7 +500,8 @@ test('command treats string availability like \"in stock\" as true', function ()
 });
 
 test('command overrides model availability to true when page text clearly indicates in-stock + buy button', function () {
-    Storage::fake('local');
+    Storage::fake('s3');
+    config(['filesystems.disks.s3.url' => 'https://s3.test']);
 
     $domain = Domain::query()->create([
         'domain' => 'ti.ua',
@@ -485,15 +518,22 @@ test('command overrides model availability to true when page text clearly indica
     // 1x1 transparent PNG
     $png = base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+G2Z0AAAAASUVORK5CYII=', true);
     expect($png)->not->toBeFalse();
-    Storage::disk('local')->put('screenshots/test/avail-override.png', $png);
+    $shotKey = 'tests/screenshots/avail-override.png';
+    Storage::disk('s3')->put($shotKey, $png);
+    $shotUrl = Storage::disk('s3')->url($shotKey);
+
+    $contentKey = 'tests/content/avail-override.txt';
+    $contentHtml = '<main>В наявності <button>Купити</button></main>';
+    Storage::disk('s3')->put($contentKey, $contentHtml);
+    $contentUrl = Storage::disk('s3')->url($contentKey);
 
     $page = Page::query()->create([
         'domain_id' => $domain->id,
         'url' => 'https://ti.ua/ua/igrovaya-pristavka-microsoft-xbox-series-x.html',
         'title' => 'Xbox Series X',
         'meta_description' => 'Замовляй та забери сьогодні',
-        'content_with_tags_purified' => '<main>В наявності <button>Купити</button></main>',
-        'screenshot_path' => 'screenshots/test/avail-override.png',
+        'content_with_tags_purified' => $contentUrl,
+        'screenshot_path' => $shotUrl,
         'last_crawled_at' => now(),
     ]);
 
@@ -501,6 +541,7 @@ test('command overrides model availability to true when page text clearly indica
     $openAi->shouldReceive('isConfigured')->andReturnTrue();
     $openAi->shouldReceive('getBaseUrl')->andReturn('http://lmstudio.test');
     $openAi->shouldReceive('getModel')->andReturn('test-model');
+    $openAi->shouldReceive('getVisionModel')->andReturn('test-vision-model');
     $openAi->shouldReceive('chatWithImage')
         ->once()
         ->andReturn([
@@ -523,7 +564,8 @@ test('command overrides model availability to true when page text clearly indica
 });
 
 test('command overrides model availability to false when page text clearly indicates out-of-stock', function () {
-    Storage::fake('local');
+    Storage::fake('s3');
+    config(['filesystems.disks.s3.url' => 'https://s3.test']);
 
     $domain = Domain::query()->create([
         'domain' => 'ti.ua',
@@ -540,14 +582,21 @@ test('command overrides model availability to false when page text clearly indic
     // 1x1 transparent PNG
     $png = base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+G2Z0AAAAASUVORK5CYII=', true);
     expect($png)->not->toBeFalse();
-    Storage::disk('local')->put('screenshots/test/oos-override.png', $png);
+    $shotKey = 'tests/screenshots/oos-override.png';
+    Storage::disk('s3')->put($shotKey, $png);
+    $shotUrl = Storage::disk('s3')->url($shotKey);
+
+    $contentKey = 'tests/content/oos-override.txt';
+    $contentHtml = '<main>Немає в наявності</main>';
+    Storage::disk('s3')->put($contentKey, $contentHtml);
+    $contentUrl = Storage::disk('s3')->url($contentKey);
 
     $page = Page::query()->create([
         'domain_id' => $domain->id,
         'url' => 'https://ti.ua/ua/product/2.html',
         'title' => 'Some product',
-        'content_with_tags_purified' => '<main>Немає в наявності</main>',
-        'screenshot_path' => 'screenshots/test/oos-override.png',
+        'content_with_tags_purified' => $contentUrl,
+        'screenshot_path' => $shotUrl,
         'last_crawled_at' => now(),
     ]);
 
@@ -555,6 +604,7 @@ test('command overrides model availability to false when page text clearly indic
     $openAi->shouldReceive('isConfigured')->andReturnTrue();
     $openAi->shouldReceive('getBaseUrl')->andReturn('http://lmstudio.test');
     $openAi->shouldReceive('getModel')->andReturn('test-model');
+    $openAi->shouldReceive('getVisionModel')->andReturn('test-vision-model');
     $openAi->shouldReceive('chatWithImage')
         ->once()
         ->andReturn([
@@ -577,7 +627,8 @@ test('command overrides model availability to false when page text clearly indic
 });
 
 test('command maps compound product_type like \"gaming_console\" to existing \"console\" type_structures', function () {
-    Storage::fake('local');
+    Storage::fake('s3');
+    config(['filesystems.disks.s3.url' => 'https://s3.test']);
 
     $domain = Domain::query()->create([
         'domain' => 'shop-type-map.test',
@@ -594,14 +645,21 @@ test('command maps compound product_type like \"gaming_console\" to existing \"c
     // 1x1 transparent PNG
     $png = base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+G2Z0AAAAASUVORK5CYII=', true);
     expect($png)->not->toBeFalse();
-    Storage::disk('local')->put('screenshots/test/type-map.png', $png);
+    $shotKey = 'tests/screenshots/type-map.png';
+    Storage::disk('s3')->put($shotKey, $png);
+    $shotUrl = Storage::disk('s3')->url($shotKey);
+
+    $contentKey = 'tests/content/type-map.txt';
+    $contentHtml = '<main>В наявності <button>Купити</button></main>';
+    Storage::disk('s3')->put($contentKey, $contentHtml);
+    $contentUrl = Storage::disk('s3')->url($contentKey);
 
     $page = Page::query()->create([
         'domain_id' => $domain->id,
         'url' => 'https://shop-type-map.test/product/1',
         'title' => 'Xbox Series X',
-        'content_with_tags_purified' => '<main>В наявності <button>Купити</button></main>',
-        'screenshot_path' => 'screenshots/test/type-map.png',
+        'content_with_tags_purified' => $contentUrl,
+        'screenshot_path' => $shotUrl,
         'last_crawled_at' => now(),
     ]);
 
@@ -609,6 +667,7 @@ test('command maps compound product_type like \"gaming_console\" to existing \"c
     $openAi->shouldReceive('isConfigured')->andReturnTrue();
     $openAi->shouldReceive('getBaseUrl')->andReturn('http://lmstudio.test');
     $openAi->shouldReceive('getModel')->andReturn('test-model');
+    $openAi->shouldReceive('getVisionModel')->andReturn('test-vision-model');
     $openAi->shouldReceive('chatWithImage')
         ->once()
         ->andReturn([
@@ -627,6 +686,7 @@ test('command maps compound product_type like \"gaming_console\" to existing \"c
     $page->refresh();
     expect($page->product_type_id)->toBe($console->id);
 });
+
 
 
 

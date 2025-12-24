@@ -7,13 +7,14 @@ namespace App\Console\Commands;
 use App\Models\Page;
 use App\Services\Json\JsonParserService;
 use App\Services\LmStudioOpenApi\LmStudioOpenApiService;
+use App\Services\Pages\PageScreenshotDataUrlService;
 use App\Services\Pages\PageProductTypeCandidateService;
 use App\Services\Redis\PageLockService;
+use App\Services\Storage\PageAssetsStorageService;
 use App\Services\TypeStructure\TypeStructureService;
 use Illuminate\Console\Command;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Storage;
 
 /**
  * Detect whether a page is a product, whether it's available,
@@ -42,6 +43,8 @@ final class ProductTypeDetectionCommand extends Command
         private readonly JsonParserService $jsonParser,
         private readonly TypeStructureService $typeStructureService,
         private readonly PageProductTypeCandidateService $candidates,
+        private readonly PageAssetsStorageService $assets,
+        private readonly PageScreenshotDataUrlService $screenshotDataUrl,
     ) {
         parent::__construct();
     }
@@ -59,7 +62,7 @@ final class ProductTypeDetectionCommand extends Command
         $this->info('🤖 PRODUCT TYPE DETECTION (Screenshot + OpenAI-compatible API)');
         $this->info("⏰ Started at: " . now()->format('Y-m-d H:i:s'));
         $this->info("📡 API: {$this->openAi->getBaseUrl()}");
-        $this->info("🧠 Model: {$this->openAi->getModel()}");
+        $this->info("🧠 Vision model: {$this->openAi->getVisionModel()}");
         $this->logSeparator();
 
         if (!$this->openAi->isConfigured()) {
@@ -173,7 +176,14 @@ final class ProductTypeDetectionCommand extends Command
                 $parts[] = "Meta description: " . $this->sanitizeUtf8($page->meta_description);
             }
             if (!empty($page->content_with_tags_purified)) {
-                $preview = $this->buildContentPreview((string) $page->content_with_tags_purified, 2000);
+                $purifiedUrl = (string) $page->content_with_tags_purified;
+                try {
+                    $purified = $this->assets->getTextFromUrl($purifiedUrl);
+                } catch (\Throwable) {
+                    $purified = '';
+                }
+
+                $preview = $this->buildContentPreview($purified, 2000);
                 if ($preview !== '') {
                     $parts[] = "Content preview: " . $this->sanitizeUtf8($preview);
                 }
@@ -181,7 +191,7 @@ final class ProductTypeDetectionCommand extends Command
             $content = implode("\n", $parts);
             $this->info('   📝 Context length (text only): ' . strlen($content) . ' chars');
 
-            $imageDataUrl = $this->getScreenshotDataUrl($page);
+            $imageDataUrl = $this->screenshotDataUrl->forPage($page, 0, 3500);
             if ($imageDataUrl === null) {
                 $this->warn('   ⚠️  Screenshot file does not exist; skipping');
                 Log::warning('🤖 [ProductTypeDetect] Screenshot missing on disk', [
@@ -283,9 +293,19 @@ final class ProductTypeDetectionCommand extends Command
 
                 // Deterministic availability override from page text (helps when the model misses "В наявності/Купити").
                 if ($isProduct === true) {
+                    $purifiedText = '';
+                    $purifiedUrl = (string) ($page->content_with_tags_purified ?? '');
+                    if ($purifiedUrl !== '') {
+                        try {
+                            $purifiedText = $this->assets->getTextFromUrl($purifiedUrl);
+                        } catch (\Throwable) {
+                            $purifiedText = '';
+                        }
+                    }
+
                     $availabilityFromText = $this->guessAvailabilityFromText(
                         metaDescription: (string) ($page->meta_description ?? ''),
-                        contentWithTagsPurified: (string) ($page->content_with_tags_purified ?? ''),
+                        contentWithTagsPurified: $purifiedText,
                     );
 
                     if ($availabilityFromText !== null && $availabilityFromText !== $isAvailable) {
@@ -657,163 +677,7 @@ final class ProductTypeDetectionCommand extends Command
         return number_format(max(0.0, $seconds), 2) . 's';
     }
 
-    /**
-     * Resolve screenshot_path to a data URL suitable for OpenAI-compatible image_url payload.
-     *
-     * Supports:
-     * - Storage disk "local" (may be rooted at storage/app/private)
-     * - Legacy Stage 1 path under storage/app/
-     * - Absolute paths (if screenshot_path was saved as full path)
-     */
-    private function getScreenshotDataUrl(Page $page): ?string
-    {
-        $path = (string) ($page->screenshot_path ?? '');
-        if ($path === '') {
-            return null;
-        }
-
-        // 1) Preferred: Laravel local disk
-        if (Storage::disk('local')->exists($path)) {
-            $binary = Storage::disk('local')->get($path);
-            return $this->toCroppedDataUrl($binary);
-        }
-
-        // 2) Stage 1 currently stores under storage/app/{relative}
-        $legacyFullPath = storage_path('app/' . ltrim($path, '/'));
-        if (file_exists($legacyFullPath)) {
-            $binary = file_get_contents($legacyFullPath);
-            if ($binary === false) {
-                return null;
-            }
-            return $this->toCroppedDataUrl($binary);
-        }
-
-        // 3) Absolute path stored in DB
-        if (str_starts_with($path, '/') && file_exists($path)) {
-            $binary = file_get_contents($path);
-            if ($binary === false) {
-                return null;
-            }
-            return $this->toCroppedDataUrl($binary);
-        }
-
-        return null;
-    }
-
-    /**
-     * Convert screenshot bytes to a data URL after cropping to max 2000px height.
-     * This does NOT write anything to disk.
-     */
-    private function toCroppedDataUrl(string $binary): ?string
-    {
-        $imageInfo = @getimagesizefromstring($binary);
-        if ($imageInfo === false) {
-            return null;
-        }
-
-        $mime = (string) ($imageInfo['mime'] ?? '');
-        if (!in_array($mime, ['image/png', 'image/jpeg'], true)) {
-            return null;
-        }
-
-        // Crop for AI when GD is available:
-        // - keep from top (y=0)
-        // - crop to max height 1500px
-        //
-        // Important: do not require GD in runtime/tests. If GD is missing, fall back
-        // to original bytes (still useful for vision models).
-        if (!function_exists('imagecreatefromstring') || !function_exists('imagecreatetruecolor')) {
-            return "data:{$mime};base64," . base64_encode($binary);
-        }
-
-        $croppedBinary = $this->cropImageBinaryForAi($binary, $mime, 0, 3500);
-        if ($croppedBinary === null) {
-            $croppedBinary = $binary;
-        }
-
-        return "data:{$mime};base64," . base64_encode($croppedBinary);
-    }
-
-    /**
-     * Crop image to a specific viewport and return encoded bytes.
-     *
-     * Rules:
-     * - If image is too short to remove $topCropPx: return original bytes (don't fail).
-     * - If resulting crop equals original (no crop): return original bytes (avoid re-encode).
-     * - Otherwise crop from Y=$topCropPx and keep up to $targetHeightPx.
-     */
-    private function cropImageBinaryForAi(string $binary, string $mime, int $topCropPx, int $targetHeightPx): ?string
-    {
-        $source = @imagecreatefromstring($binary);
-        if ($source === false) {
-            return null;
-        }
-
-        $width = imagesx($source);
-        $height = imagesy($source);
-
-        $topCropPx = max(0, $topCropPx);
-        $targetHeightPx = max(1, $targetHeightPx);
-
-        // Not enough height to remove the header area - keep original
-        if ($height <= $topCropPx) {
-            imagedestroy($source);
-            return $binary;
-        }
-
-        $startY = $topCropPx;
-        $cropHeight = min($targetHeightPx, $height - $startY);
-        if ($cropHeight <= 0) {
-            imagedestroy($source);
-            return $binary;
-        }
-
-        // No-op crop (keep original bytes)
-        if ($startY === 0 && $cropHeight === $height) {
-            imagedestroy($source);
-            return $binary;
-        }
-
-        $cropped = imagecreatetruecolor($width, $cropHeight);
-        if ($cropped === false) {
-            imagedestroy($source);
-            return null;
-        }
-
-        // Preserve transparency for PNG
-        if ($mime === 'image/png') {
-            imagealphablending($cropped, false);
-            imagesavealpha($cropped, true);
-            $transparent = imagecolorallocatealpha($cropped, 0, 0, 0, 127);
-            imagefilledrectangle($cropped, 0, 0, $width, $cropHeight, $transparent);
-        }
-
-        // Crop: copy from (0, startY) to (0, 0)
-        imagecopy($cropped, $source, 0, 0, 0, $startY, $width, $cropHeight);
-        imagedestroy($source);
-
-        $obLevel = ob_get_level();
-        ob_start();
-        try {
-            if ($mime === 'image/jpeg') {
-                imagejpeg($cropped, null, 85);
-            } else {
-                imagepng($cropped);
-            }
-            $out = ob_get_clean();
-        } finally {
-            imagedestroy($cropped);
-            while (ob_get_level() > $obLevel) {
-                @ob_end_clean();
-            }
-        }
-
-        if (!is_string($out) || $out === '') {
-            return null;
-        }
-
-        return $out;
-    }
+    // Screenshot data URL is now provided by App\Services\Pages\PageScreenshotDataUrlService (S3-only).
 
     private function logSeparator(string $char = '═'): void
     {

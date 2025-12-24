@@ -7,6 +7,7 @@ namespace App\Console\Commands;
 use App\Models\Page;
 use App\Services\OpenRouter\OpenRouterService;
 use App\Services\Playwright\ContentExtractorService;
+use App\Services\Storage\PageAssetsStorageService;
 use Carbon\Carbon;
 use Illuminate\Console\Command;
 use Illuminate\Support\Collection;
@@ -46,6 +47,7 @@ class ProcessPageCommand extends Command
     public function __construct(
         private readonly ContentExtractorService $contentExtractor,
         private readonly OpenRouterService $openRouter,
+        private readonly PageAssetsStorageService $assets,
     ) {
         parent::__construct();
     }
@@ -246,8 +248,9 @@ class ProcessPageCommand extends Command
             $this->info("   ✅ Content extracted ({$extractResult['loadTimeMs']}ms, " . strlen($extractResult['content']) . " chars)");
 
             // Save extracted content
+            $purifiedUrl = $this->assets->storePurifiedContent($page, (string) $extractResult['content']);
             $page->update([
-                'content_with_tags_purified' => $extractResult['content'],
+                'content_with_tags_purified' => $purifiedUrl,
                 'title' => $extractResult['title'] ?? $page->title,
                 'last_crawled_at' => now(),
             ]);
@@ -321,7 +324,7 @@ class ProcessPageCommand extends Command
             // Release lock on failure
             $this->releaseLock($page);
 
-            return false;
+            throw $e;
         }
     }
 

@@ -5,139 +5,109 @@ declare(strict_types=1);
 namespace App\Services\Pages;
 
 use App\Models\Page;
-use Illuminate\Support\Facades\Cache;
+use App\Services\Storage\PageAssetsStorageService;
 use Illuminate\Support\Facades\Storage;
+use League\Flysystem\UnableToCheckFileExistence;
+use League\Flysystem\UnableToRetrieveMetadata;
 
 /**
- * Create and cache derived screenshots (e.g. cropped to a max height).
+ * S3-first derived screenshots for Admin UI.
  *
- * Caching strategy:
- * - Cache maps (pageId, cropHeight, sourceSignature) -> derived relative path
- * - Derived file is stored on disk "local" (storage/app/private)
+ * Contract:
+ * - pages.screenshot_path contains a PUBLIC S3 URL (original screenshot)
+ * - derived screenshots are stored in S3 as public objects
+ * - derived key includes dimensions, e.g. 1920x2300 (requested crop height)
  */
 final class PageScreenshotDerivativeService
 {
     private const int MAX_CROP_HEIGHT = 10000;
 
-    private const string DERIVED_DIR = 'derived/screenshots';
+    private const int TARGET_WIDTH_PX = 1920;
+
+    private const string DISK = 's3';
+
+    private const string CACHE_CONTROL = 'public, max-age=604800';
 
     public function __construct(
-        private readonly PageScreenshotPathResolver $pathResolver,
+        private readonly PageAssetsStorageService $assets,
     ) {}
 
     /**
-     * Resolve a screenshot file for response.
-     *
-     * If $cropHeight is null, returns original file.
-     * If $cropHeight is set, returns a derived file when cropping is applicable.
-     *
-     * @return array{absolutePath: string, mime: string, etag: string, lastModified: int}|null
+     * Resolve a public URL for response.
+     * If $cropHeight is null: returns original screenshot URL.
+     * If $cropHeight is set: returns derived URL (creates it in S3 on-demand).
      */
-    public function resolveForResponse(Page $page, ?int $cropHeight): ?array
+    public function resolveRedirectUrl(Page $page, ?int $cropHeight): ?string
     {
-        $sourcePath = $this->pathResolver->resolveAbsolutePath($page);
-        if ($sourcePath === null) {
+        $sourceUrl = (string) ($page->screenshot_path ?? '');
+        if ($sourceUrl === '') {
             return null;
         }
-
-        $sourceMTime = (int) (@filemtime($sourcePath) ?: 0);
-        $sourceSize = (int) (@filesize($sourcePath) ?: 0);
-        $takenAt = $page->screenshot_taken_at?->timestamp ?? 0;
-
-        $sourceSignature = hash('sha256', implode('|', [
-            $sourcePath,
-            (string) $sourceMTime,
-            (string) $sourceSize,
-            (string) $takenAt,
-        ]));
 
         $cropHeight = $this->normalizeCropHeight($cropHeight);
 
-        // Original file (no crop requested)
+        // Original URL (no crop requested)
         if ($cropHeight === null) {
-            $etag = $this->etagFor($sourceSignature, null);
-
-            return [
-                'absolutePath' => $sourcePath,
-                'mime' => $this->detectMime($sourcePath) ?? 'application/octet-stream',
-                'etag' => $etag,
-                'lastModified' => $sourceMTime,
-            ];
+            return $sourceUrl;
         }
 
-        $sourceBinary = @file_get_contents($sourcePath);
-        if (!is_string($sourceBinary) || $sourceBinary === '') {
+        $sourceKey = $this->assets->extractS3KeyFromPublicUrl($sourceUrl);
+        $sourceBinary = $this->assets->getBinaryFromUrl($sourceUrl);
+        if ($sourceBinary === '') {
             return null;
         }
 
-        $meta = @getimagesizefromstring($sourceBinary);
-        if (!is_array($meta)) {
-            return null;
+        $ext = $this->normalizeExtFromKey($sourceKey);
+        $contentType = match ($ext) {
+            'png' => 'image/png',
+            'jpg' => 'image/jpeg',
+            default => 'application/octet-stream',
+        };
+
+        $derivedBinary = $this->resizeToWidthAndCropFromTop(
+            binary: $sourceBinary,
+            ext: $ext,
+            targetWidth: self::TARGET_WIDTH_PX,
+            targetHeight: $cropHeight,
+        );
+
+        if ($derivedBinary === null) {
+            $derivedBinary = $sourceBinary;
         }
 
-        $mime = (string) ($meta['mime'] ?? '');
-        if (!in_array($mime, ['image/png', 'image/jpeg'], true)) {
-            return null;
+        // Content-addressable key using MD5 of derived image
+        $derivedKey = $this->derivedKeyFor($page, $cropHeight, $ext, $derivedBinary);
+
+        // Check if already exists (deduplication)
+        if (Storage::disk(self::DISK)->exists($derivedKey)) {
+            return Storage::disk(self::DISK)->url($derivedKey);
         }
 
-        $width = (int) ($meta[0] ?? 0);
-        $height = (int) ($meta[1] ?? 0);
+        Storage::disk(self::DISK)->put($derivedKey, $derivedBinary, [
+            'visibility' => 'public',
+            'ContentType' => $contentType,
+            'CacheControl' => self::CACHE_CONTROL,
+        ]);
 
-        // No-op: already short enough
-        if ($height > 0 && $height <= $cropHeight) {
-            $etag = $this->etagFor($sourceSignature, $cropHeight);
-
-            return [
-                'absolutePath' => $sourcePath,
-                'mime' => $mime,
-                'etag' => $etag,
-                'lastModified' => $sourceMTime,
-            ];
-        }
-
-        $cacheKey = "page_screenshot_derived:{$page->id}:{$cropHeight}:{$sourceSignature}";
-        $ttl = now()->addDays(7);
-
-        /** @var string $derivedRelativePath */
-        $derivedRelativePath = Cache::remember($cacheKey, $ttl, function () use ($page, $cropHeight, $sourceSignature, $sourceBinary, $mime, $width): string {
-            $ext = $mime === 'image/png' ? 'png' : 'jpg';
-            $signatureShort = substr($sourceSignature, 0, 24);
-            $dir = self::DERIVED_DIR . "/page-{$page->id}";
-            $relativePath = "{$dir}/crop-{$cropHeight}-{$signatureShort}.{$ext}";
-
-            $absolutePath = Storage::disk('local')->path($relativePath);
-            if (is_file($absolutePath)) {
-                return $relativePath;
+        $expected = strlen($derivedBinary);
+        try {
+            if (!Storage::disk(self::DISK)->exists($derivedKey)) {
+                throw new \RuntimeException("Derived screenshot does not exist after write: {$derivedKey}");
             }
 
-            Storage::disk('local')->makeDirectory($dir);
-
-            $derived = $this->cropBinaryFromTop(
-                binary: $sourceBinary,
-                mime: $mime,
-                targetHeight: $cropHeight,
-                expectedWidth: $width > 0 ? $width : null,
-            );
-
-            // If crop failed (GD missing, decode fail, etc) -> keep original bytes as derivative
-            if ($derived === null) {
-                $derived = $sourceBinary;
+            $actual = Storage::disk(self::DISK)->size($derivedKey);
+            if (!is_int($actual) || $actual !== $expected) {
+                throw new \RuntimeException("Derived screenshot size mismatch for {$derivedKey}: expected {$expected}, got " . (is_int($actual) ? (string) $actual : 'null'));
             }
+        } catch (UnableToCheckFileExistence|UnableToRetrieveMetadata $e) {
+            // HeadObject not permitted — fallback to GetObject verification
+            $fetched = Storage::disk(self::DISK)->get($derivedKey);
+            if ($fetched === null || strlen($fetched) !== $expected) {
+                throw new \RuntimeException("Derived screenshot GetObject verification failed for {$derivedKey}", 0, $e);
+            }
+        }
 
-            Storage::disk('local')->put($relativePath, $derived);
-
-            return $relativePath;
-        });
-
-        $derivedAbsolutePath = Storage::disk('local')->path($derivedRelativePath);
-        $derivedMTime = (int) (@filemtime($derivedAbsolutePath) ?: $sourceMTime);
-
-        return [
-            'absolutePath' => $derivedAbsolutePath,
-            'mime' => $mime,
-            'etag' => $this->etagFor($sourceSignature, $cropHeight),
-            'lastModified' => $derivedMTime,
-        ];
+        return Storage::disk(self::DISK)->url($derivedKey);
     }
 
     private function normalizeCropHeight(?int $cropHeight): ?int
@@ -154,32 +124,30 @@ final class PageScreenshotDerivativeService
         return min(self::MAX_CROP_HEIGHT, $cropHeight);
     }
 
-    private function etagFor(string $sourceSignature, ?int $cropHeight): string
+    private function derivedKeyFor(Page $page, int $cropHeight, string $ext, string $contents): string
     {
-        $v = hash('sha256', $sourceSignature . '|' . ($cropHeight === null ? 'orig' : (string) $cropHeight));
-        // Strong ETag format: quoted
-        return '"' . $v . '"';
+        $dims = self::TARGET_WIDTH_PX . 'x' . $cropHeight;
+        $hash = md5($contents);
+
+        return "pages/{$page->id}/derived_screenshots/{$dims}/{$hash}.{$ext}";
     }
 
-    private function detectMime(string $path): ?string
+    private function normalizeExtFromKey(string $key): string
     {
-        $binary = @file_get_contents($path);
-        if (!is_string($binary) || $binary === '') {
-            return null;
+        $ext = strtolower((string) pathinfo($key, PATHINFO_EXTENSION));
+        $ext = $ext === 'jpeg' ? 'jpg' : $ext;
+        if (in_array($ext, ['png', 'jpg'], true)) {
+            return $ext;
         }
-        $meta = @getimagesizefromstring($binary);
-        if (!is_array($meta)) {
-            return null;
-        }
-        $mime = (string) ($meta['mime'] ?? '');
-        return $mime !== '' ? $mime : null;
+
+        return 'png';
     }
 
     /**
-     * Crop image bytes from the top (y=0) to target height and return re-encoded bytes.
-     * Returns null if GD is unavailable or crop fails.
+     * Resize to target width (preserving aspect ratio) and crop from top to target height.
+     * Returns null if GD is unavailable or transformation fails.
      */
-    private function cropBinaryFromTop(string $binary, string $mime, int $targetHeight, ?int $expectedWidth): ?string
+    private function resizeToWidthAndCropFromTop(string $binary, string $ext, int $targetWidth, int $targetHeight): ?string
     {
         if (!function_exists('imagecreatefromstring') || !function_exists('imagecreatetruecolor')) {
             return null;
@@ -190,42 +158,59 @@ final class PageScreenshotDerivativeService
             return null;
         }
 
-        $width = imagesx($source);
-        $height = imagesy($source);
-
-        // Basic sanity check (helps avoid weird GD failures on corrupt files)
-        if ($expectedWidth !== null && $expectedWidth > 0 && $width > 0 && abs($expectedWidth - $width) > 2) {
-            // ignore, just proceed — width mismatch isn't fatal
+        $srcW = imagesx($source);
+        $srcH = imagesy($source);
+        if ($srcW <= 0 || $srcH <= 0) {
+            imagedestroy($source);
+            return null;
         }
 
+        $targetWidth = max(1, $targetWidth);
         $targetHeight = max(1, $targetHeight);
-        $cropHeight = min($targetHeight, $height);
 
-        $cropped = imagecreatetruecolor($width, $cropHeight);
+        $scale = $srcW === $targetWidth ? 1.0 : ($targetWidth / $srcW);
+        $scaledH = (int) max(1, (int) round($srcH * $scale));
+
+        $scaled = $srcW === $targetWidth
+            ? $source
+            : imagescale($source, $targetWidth, $scaledH);
+
+        if ($scaled === false) {
+            imagedestroy($source);
+            return null;
+        }
+
+        $cropH = min($targetHeight, imagesy($scaled));
+        $cropped = imagecreatetruecolor($targetWidth, $cropH);
         if ($cropped === false) {
+            if ($scaled !== $source) {
+                imagedestroy($scaled);
+            }
             imagedestroy($source);
             return null;
         }
 
         // Preserve transparency for PNG
-        if ($mime === 'image/png') {
+        if ($ext === 'png') {
             imagealphablending($cropped, false);
             imagesavealpha($cropped, true);
             $transparent = imagecolorallocatealpha($cropped, 0, 0, 0, 127);
-            imagefilledrectangle($cropped, 0, 0, $width, $cropHeight, $transparent);
+            imagefilledrectangle($cropped, 0, 0, $targetWidth, $cropH, $transparent);
         }
 
-        imagecopy($cropped, $source, 0, 0, 0, 0, $width, $cropHeight);
+        imagecopy($cropped, $scaled, 0, 0, 0, 0, $targetWidth, $cropH);
+
+        if ($scaled !== $source) {
+            imagedestroy($scaled);
+        }
         imagedestroy($source);
 
         $obLevel = ob_get_level();
         ob_start();
         try {
-            if ($mime === 'image/jpeg') {
-                imagejpeg($cropped, null, 85);
-            } else {
-                imagepng($cropped);
-            }
+            $ext === 'jpg'
+                ? imagejpeg($cropped, null, 85)
+                : imagepng($cropped);
             $out = ob_get_clean();
         } finally {
             imagedestroy($cropped);

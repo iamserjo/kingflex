@@ -6,6 +6,7 @@ namespace App\Jobs;
 
 use App\Models\Page;
 use App\Services\OpenRouter\OpenRouterService;
+use App\Services\Storage\PageAssetsStorageService;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -44,7 +45,7 @@ class GeneratePageEmbeddingJob implements ShouldQueue
     /**
      * Execute the job.
      */
-    public function handle(OpenRouterService $openRouter): void
+    public function handle(OpenRouterService $openRouter, PageAssetsStorageService $assets): void
     {
         if (!$openRouter->isConfigured()) {
             Log::warning('OpenRouter is not configured, skipping embedding generation', [
@@ -62,7 +63,7 @@ class GeneratePageEmbeddingJob implements ShouldQueue
         ]);
 
         // Prepare text for embedding
-        $text = $this->prepareTextForEmbedding();
+        $text = $this->prepareTextForEmbedding($assets);
 
         if (empty($text)) {
             Log::warning('No text available for embedding', [
@@ -98,7 +99,7 @@ class GeneratePageEmbeddingJob implements ShouldQueue
     /**
      * Prepare text for embedding generation.
      */
-    private function prepareTextForEmbedding(): string
+    private function prepareTextForEmbedding(PageAssetsStorageService $assets): string
     {
         $parts = [];
 
@@ -127,8 +128,10 @@ class GeneratePageEmbeddingJob implements ShouldQueue
         $parts[] = "URL: {$this->page->url}";
 
         // If we don't have enough structured data, extract from HTML
-        if (count($parts) < 3 && !empty($this->page->raw_html)) {
-            $textContent = $this->extractTextFromHtml($this->page->raw_html);
+        $rawHtmlUrl = (string) ($this->page->raw_html ?? '');
+        if (count($parts) < 3 && $rawHtmlUrl !== '') {
+            $html = $assets->getTextFromUrl($rawHtmlUrl);
+            $textContent = $this->extractTextFromHtml($html);
             if (!empty($textContent)) {
                 $parts[] = "Content: " . substr($textContent, 0, 5000);
             }

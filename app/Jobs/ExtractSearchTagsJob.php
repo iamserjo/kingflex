@@ -8,6 +8,7 @@ use App\Models\Page;
 use App\Models\PageSearchTag;
 use App\Services\Html\HtmlSanitizerService;
 use App\Services\OpenRouter\OpenRouterService;
+use App\Services\Storage\PageAssetsStorageService;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -47,7 +48,7 @@ class ExtractSearchTagsJob implements ShouldQueue
     /**
      * Execute the job.
      */
-    public function handle(OpenRouterService $openRouter, HtmlSanitizerService $sanitizer): void
+    public function handle(OpenRouterService $openRouter, HtmlSanitizerService $sanitizer, PageAssetsStorageService $assets): void
     {
         if (!$openRouter->isConfigured()) {
             Log::warning('OpenRouter not configured, skipping search tags extraction', [
@@ -62,7 +63,7 @@ class ExtractSearchTagsJob implements ShouldQueue
         ]);
 
         $systemPrompt = view('ai-prompts.extract-search-tags')->render();
-        $content = $this->prepareContent($sanitizer);
+        $content = $this->prepareContent($sanitizer, $assets);
 
         if (empty($content)) {
             Log::warning('No content available for search tag extraction', [
@@ -92,7 +93,7 @@ class ExtractSearchTagsJob implements ShouldQueue
      * Prepare content for AI analysis.
      * Uses already analyzed page data plus sanitized HTML.
      */
-    private function prepareContent(HtmlSanitizerService $sanitizer): string
+    private function prepareContent(HtmlSanitizerService $sanitizer, PageAssetsStorageService $assets): string
     {
         $parts = [];
 
@@ -115,8 +116,10 @@ class ExtractSearchTagsJob implements ShouldQueue
         }
 
         // Add sanitized HTML
-        if (!empty($this->page->raw_html)) {
-            $result = $sanitizer->sanitize($this->page->raw_html, 20000);
+        $rawHtmlUrl = (string) ($this->page->raw_html ?? '');
+        if ($rawHtmlUrl !== '') {
+            $rawHtml = $assets->getTextFromUrl($rawHtmlUrl);
+            $result = $sanitizer->sanitize($rawHtml, 20000);
             $parts[] = "\n=== HTML CONTENT ===";
             $parts[] = $result['html'];
         }

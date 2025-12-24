@@ -7,6 +7,7 @@ use App\Services\LmStudioOpenApi\LmStudioOpenApiService;
 use App\Services\Redis\PageLockService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\Storage;
 
 uses(RefreshDatabase::class);
 
@@ -19,6 +20,9 @@ beforeEach(function () {
 });
 
 test('command extracts attributes and stores json_attributes + sku/product_code/model_number', function () {
+    Storage::fake('s3');
+    config(['filesystems.disks.s3.url' => 'https://s3.test']);
+
     $domain = Domain::query()->create([
         'domain' => 'shop.test',
         'is_active' => true,
@@ -35,11 +39,24 @@ test('command extracts attributes and stores json_attributes + sku/product_code/
         ],
     ]);
 
+    // 1x1 transparent PNG
+    $png = base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+G2Z0AAAAASUVORK5CYII=', true);
+    expect($png)->not->toBeFalse();
+    $shotKey = 'tests/screenshots/attributes.png';
+    Storage::disk('s3')->put($shotKey, $png);
+    $shotUrl = Storage::disk('s3')->url($shotKey);
+
+    $contentKey = 'tests/content/attributes.txt';
+    $contentHtml = '<div><h1>Super Phone</h1><div>SKU: ABC-123</div></div>';
+    Storage::disk('s3')->put($contentKey, $contentHtml);
+    $contentUrl = Storage::disk('s3')->url($contentKey);
+
     $page = Page::query()->create([
         'domain_id' => $domain->id,
         'url' => 'https://shop.test/product/1',
         'title' => 'Super Phone',
-        'content_with_tags_purified' => '<div><h1>Super Phone</h1><div>SKU: ABC-123</div></div>',
+        'screenshot_path' => $shotUrl,
+        'content_with_tags_purified' => $contentUrl,
         'last_crawled_at' => now(),
         'is_product' => true,
         'is_product_available' => true,
@@ -51,7 +68,8 @@ test('command extracts attributes and stores json_attributes + sku/product_code/
     $openAi->shouldReceive('isConfigured')->andReturnTrue();
     $openAi->shouldReceive('getBaseUrl')->andReturn('http://lmstudio.test');
     $openAi->shouldReceive('getModel')->andReturn('test-model');
-    $openAi->shouldReceive('chat')
+    $openAi->shouldReceive('getVisionModel')->andReturn('test-vision-model');
+    $openAi->shouldReceive('chatWithImage')
         ->once()
         ->andReturn([
             'content' => json_encode([
@@ -88,6 +106,7 @@ test('command extracts attributes and stores json_attributes + sku/product_code/
             'ram' => ['size' => 8, 'humanSize' => '8GB'],
         ]);
 });
+
 
 
 

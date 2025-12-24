@@ -10,6 +10,7 @@ use App\Services\LmStudioOpenApi\LmStudioOpenApiService;
 use App\Services\Pages\PageCandidateFinderService;
 use App\Services\Pages\PageScreenshotDataUrlService;
 use App\Services\Redis\PageLockService;
+use App\Services\Storage\PageAssetsStorageService;
 use Illuminate\Console\Command;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\Log;
@@ -28,7 +29,9 @@ class GeneratePageRecapCommand extends Command
     protected $signature = 'page:recap
                             {--limit=1 : Number of pages to process}
                             {--domain= : Only process pages from specific domain}
-                            {--page= : Process specific page by ID}';
+                            {--page= : Process specific page by ID}
+                            {--attempts=3 : Max retry attempts per page when JSON is invalid/truncated}
+                            {--sleep-ms=250 : Sleep between retries in ms}';
 
     protected $description = 'Stage 2: Generate product fields for pages using LM Studio OpenAPI';
 
@@ -40,15 +43,18 @@ class GeneratePageRecapCommand extends Command
         private readonly PageCandidateFinderService $candidates,
         private readonly JsonParserService $jsonParser,
         private readonly PageScreenshotDataUrlService $screenshotDataUrl,
+        private readonly PageAssetsStorageService $assets,
     ) {
         parent::__construct();
     }
 
     public function handle(): int
     {
-        $limit = (int) $this->option('limit');
+        $limit = max(1, (int) $this->option('limit'));
         $domainFilter = $this->option('domain');
         $pageId = $this->option('page');
+        $maxAttempts = max(1, (int) $this->option('attempts'));
+        $sleepMs = max(0, (int) $this->option('sleep-ms'));
 
         $this->logSeparator();
         $this->info('🤖 STAGE 2: PRODUCT FIELDS GENERATOR');
@@ -68,6 +74,7 @@ class GeneratePageRecapCommand extends Command
         $processed = 0;
         $errors = 0;
         $skipped = 0;
+        $attempted = 0;
 
         // Process specific page by ID
         if ($pageId) {
@@ -82,7 +89,7 @@ class GeneratePageRecapCommand extends Command
                 return self::SUCCESS;
             }
 
-            $result = $this->processPage($page);
+            $result = $this->processPage($page, $maxAttempts, $sleepMs);
             $this->lockService->releaseLock($page->id, self::STAGE);
 
             return $result ? self::SUCCESS : self::FAILURE;
@@ -91,7 +98,7 @@ class GeneratePageRecapCommand extends Command
         // Process multiple pages
         $lastProcessedId = 0;
 
-        while ($processed + $skipped < $limit) {
+        while ($attempted < $limit) {
             $page = $this->getNextPage($lastProcessedId, $domainFilter);
 
             if (!$page) {
@@ -109,8 +116,9 @@ class GeneratePageRecapCommand extends Command
             }
 
             $this->logSeparator('─');
-            $result = $this->processPage($page);
+            $result = $this->processPage($page, $maxAttempts, $sleepMs);
             $this->lockService->releaseLock($page->id, self::STAGE);
+            $attempted++;
 
             if ($result) {
                 $processed++;
@@ -136,7 +144,7 @@ class GeneratePageRecapCommand extends Command
     /**
      * Process a single page - generate product fields with Ollama.
      */
-    private function processPage(Page $page): bool
+    private function processPage(Page $page, int $maxAttempts, int $sleepMs): bool
     {
         $startTime = microtime(true);
 
@@ -185,7 +193,14 @@ class GeneratePageRecapCommand extends Command
             }
 
             if (!empty($page->content_with_tags_purified)) {
-                $preview = $this->buildContentPreview((string) $page->content_with_tags_purified, 2500);
+                $purifiedUrl = (string) $page->content_with_tags_purified;
+                try {
+                    $purified = $this->assets->getTextFromUrl($purifiedUrl);
+                } catch (\Throwable) {
+                    $purified = '';
+                }
+
+                $preview = $this->buildContentPreview($purified, 2500);
                 if ($preview !== '') {
                     $parts[] = "Content preview: {$preview}";
                 }
@@ -219,76 +234,97 @@ class GeneratePageRecapCommand extends Command
                 $options['model'] = $recapModel;
             }
 
-            $response = $this->openAi->chatWithImage(
-                systemPrompt: (string) $systemPrompt,
-                userText: $content,
-                imageDataUrl: $imageDataUrl,
-                options: $options,
-            );
+            $attempt = 0;
+            while (true) {
+                $attempt++;
+                if ($attempt > $maxAttempts) {
+                    $this->error("   ❌ Exceeded max attempts ({$maxAttempts})");
+                    Log::error('🤖 [Stage2:ProductFields] Exceeded max attempts', [
+                        'page_id' => $page->id,
+                        'attempts' => $attempt - 1,
+                    ]);
+                    return false;
+                }
 
-            $raw = (string) ($response['content'] ?? '');
+                $this->line("   🤖 Attempt #{$attempt}...");
 
-            if ($raw === '') {
-                $this->error("   ❌ AI generation failed");
-                Log::error('🤖 [Stage2:ProductFields] Generation failed', [
-                    'page_id' => $page->id,
-                    'error' => $response['error'] ?? null,
+                $response = $this->openAi->chatWithImage(
+                    systemPrompt: (string) $systemPrompt,
+                    userText: $content,
+                    imageDataUrl: $imageDataUrl,
+                    options: $options,
+                );
+
+                $raw = (string) ($response['content'] ?? '');
+                if ($raw === '') {
+                    $this->warn("   ⚠️  Empty AI response, retrying...");
+                    Log::warning('🤖 [Stage2:ProductFields] Empty response', [
+                        'page_id' => $page->id,
+                        'attempt' => $attempt,
+                        'error' => $response['error'] ?? null,
+                    ]);
+                    $this->sleepIfNeeded($sleepMs);
+                    continue;
+                }
+
+                $parsed = $this->jsonParser->parseWithKeys($raw, [
+                    'product_summary',
+                    'product_summary_specs',
+                    'product_abilities',
+                    'product_predicted_search_text',
                 ]);
-                return false;
-            }
 
-            $parsed = $this->jsonParser->parseWithKeys($raw, [
-                'product_summary',
-                'product_summary_specs',
-                'product_abilities',
-                'product_predicted_search_text',
-            ]);
+                if ($parsed === null) {
+                    $this->warn('   ⚠️  Invalid JSON response, retrying...');
+                    Log::warning('🤖 [Stage2:ProductFields] Invalid JSON response', [
+                        'page_id' => $page->id,
+                        'attempt' => $attempt,
+                        'response_preview' => substr($raw, 0, 500),
+                    ]);
+                    $this->sleepIfNeeded($sleepMs);
+                    continue;
+                }
 
-            if ($parsed === null) {
-                $this->error('   ❌ Invalid JSON response (missing keys / parse failed)');
-                Log::warning('🤖 [Stage2:ProductFields] Invalid JSON response', [
-                    'page_id' => $page->id,
-                    'response_preview' => substr($raw, 0, 500),
+                $productSummary = $this->normalizeNullableText($parsed['product_summary'] ?? null);
+                $productSpecs = $this->normalizeNullableText($parsed['product_summary_specs'] ?? null);
+                $productAbilities = $this->normalizeNullableText($parsed['product_abilities'] ?? null);
+                $predictedSearch = $this->normalizePredictedSearchText($parsed['product_predicted_search_text'] ?? null);
+
+                if ($productSummary === null || $productSpecs === null || $productAbilities === null || $predictedSearch === null) {
+                    $this->warn('   ⚠️  Parsed JSON has empty required fields, retrying...');
+                    Log::warning('🤖 [Stage2:ProductFields] Empty fields after normalization', [
+                        'page_id' => $page->id,
+                        'attempt' => $attempt,
+                        'has_product_summary' => $productSummary !== null,
+                        'has_product_specs' => $productSpecs !== null,
+                        'has_product_abilities' => $productAbilities !== null,
+                        'has_predicted_search' => $predictedSearch !== null,
+                    ]);
+                    $this->sleepIfNeeded($sleepMs);
+                    continue;
+                }
+
+                // Save product fields (do NOT touch recap_content)
+                $page->update([
+                    'product_summary' => $productSummary,
+                    'product_summary_specs' => $productSpecs,
+                    'product_abilities' => $productAbilities,
+                    'product_predicted_search_text' => $predictedSearch,
                 ]);
-                return false;
-            }
 
-            $productSummary = $this->normalizeNullableText($parsed['product_summary'] ?? null);
-            $productSpecs = $this->normalizeNullableText($parsed['product_summary_specs'] ?? null);
-            $productAbilities = $this->normalizeNullableText($parsed['product_abilities'] ?? null);
-            $predictedSearch = $this->normalizePredictedSearchText($parsed['product_predicted_search_text'] ?? null);
+                $this->info("   ✅ Product fields generated");
 
-            if ($productSummary === null || $productSpecs === null || $productAbilities === null || $predictedSearch === null) {
-                $this->error('   ❌ Parsed JSON contains empty required fields');
-                Log::warning('🤖 [Stage2:ProductFields] Empty fields after normalization', [
+                $totalTime = round((microtime(true) - $startTime) * 1000);
+                $this->info("   ⏱️  Total time: {$totalTime}ms");
+
+                Log::info('🤖 [Stage2:ProductFields] ✅ Completed', [
                     'page_id' => $page->id,
-                    'has_product_summary' => $productSummary !== null,
-                    'has_product_specs' => $productSpecs !== null,
-                    'has_product_abilities' => $productAbilities !== null,
-                    'has_predicted_search' => $predictedSearch !== null,
+                    'total_time_ms' => $totalTime,
+                    'attempts' => $attempt,
                 ]);
-                return false;
+
+                return true;
             }
-
-            // Save product fields (do NOT touch recap_content)
-            $page->update([
-                'product_summary' => $productSummary,
-                'product_summary_specs' => $productSpecs,
-                'product_abilities' => $productAbilities,
-                'product_predicted_search_text' => $predictedSearch,
-            ]);
-
-            $this->info("   ✅ Product fields generated");
-
-            $totalTime = round((microtime(true) - $startTime) * 1000);
-            $this->info("   ⏱️  Total time: {$totalTime}ms");
-
-            Log::info('🤖 [Stage2:ProductFields] ✅ Completed', [
-                'page_id' => $page->id,
-                'total_time_ms' => $totalTime,
-            ]);
-
-            return true;
 
         } catch (\Throwable $e) {
             $this->error("   ❌ Exception: " . $e->getMessage());
@@ -299,6 +335,15 @@ class GeneratePageRecapCommand extends Command
             ]);
             return false;
         }
+    }
+
+    private function sleepIfNeeded(int $sleepMs): void
+    {
+        if ($sleepMs <= 0) {
+            return;
+        }
+
+        usleep($sleepMs * 1000);
     }
 
     private function getNextPage(int $afterId, ?string $domain): ?Page

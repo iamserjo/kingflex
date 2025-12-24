@@ -6,6 +6,7 @@ namespace App\Console\Commands;
 
 use App\Models\Page;
 use App\Services\OpenRouter\OpenRouterService;
+use App\Services\Storage\PageAssetsStorageService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -27,6 +28,7 @@ class ReembedPagesCommand extends Command
 
     public function __construct(
         private readonly OpenRouterService $openRouter,
+        private readonly PageAssetsStorageService $assets,
     ) {
         parent::__construct();
     }
@@ -139,7 +141,11 @@ class ReembedPagesCommand extends Command
             $parts[] = $page->product_summary;
         }
         if (!empty($page->content_with_tags_purified)) {
-            $parts[] = $page->content_with_tags_purified;
+            try {
+                $parts[] = $this->assets->getTextFromUrl((string) $page->content_with_tags_purified);
+            } catch (\Throwable) {
+                // ignore
+            }
         }
 
         $text = trim(implode("\n", $parts));

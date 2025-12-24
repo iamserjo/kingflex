@@ -8,6 +8,7 @@ use App\Models\Page;
 use App\Services\Html\HtmlSanitizerService;
 use App\Services\OpenRouter\OpenRouterService;
 use App\Services\Playwright\ContentExtractorService;
+use App\Services\Storage\PageAssetsStorageService;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -55,6 +56,7 @@ class PageRecapJob implements ShouldQueue
         OpenRouterService $openRouter,
         ContentExtractorService $playwrightExtractor,
         HtmlSanitizerService $htmlSanitizer,
+        PageAssetsStorageService $assets,
     ): void {
         $jobStartTime = microtime(true);
 
@@ -86,7 +88,7 @@ class PageRecapJob implements ShouldQueue
             'method' => $this->usePlaywright ? 'Playwright' : 'RawHTML',
         ]);
 
-        $content = $this->getContent($playwrightExtractor, $htmlSanitizer);
+        $content = $this->getContent($playwrightExtractor, $htmlSanitizer, $assets);
 
         if (empty($content)) {
             Log::warning('📝 [PageRecapJob] ⚠️ No content available, aborting', [
@@ -194,6 +196,7 @@ class PageRecapJob implements ShouldQueue
     private function getContent(
         ContentExtractorService $playwrightExtractor,
         HtmlSanitizerService $htmlSanitizer,
+        PageAssetsStorageService $assets,
     ): string {
         $maxLength = 50000;
 
@@ -227,8 +230,9 @@ class PageRecapJob implements ShouldQueue
                     'contentLength' => strlen($result['content']),
                 ]);
 
+                $purifiedUrl = $assets->storePurifiedContent($this->page, (string) $result['content']);
                 $this->page->update([
-                    'content_with_tags_purified' => $result['content'],
+                    'content_with_tags_purified' => $purifiedUrl,
                 ]);
 
                 Log::info('📝 [PageRecapJob] ✅ Playwright content saved to page', [
@@ -267,14 +271,16 @@ class PageRecapJob implements ShouldQueue
 
         // Fallback to raw HTML sanitization
         if (!empty($this->page->raw_html)) {
-            $rawHtmlLength = strlen($this->page->raw_html);
+            $rawHtmlUrl = (string) $this->page->raw_html;
+            $rawHtml = $assets->getTextFromUrl($rawHtmlUrl);
+            $rawHtmlLength = strlen($rawHtml);
 
             Log::info('📝 [PageRecapJob] Using raw HTML sanitization fallback', [
                 'page_id' => $this->page->id,
                 'rawHtmlLength' => $rawHtmlLength,
             ]);
 
-            $sanitizedContent = $htmlSanitizer->getForAi($this->page->raw_html, $this->page->url, $maxLength);
+            $sanitizedContent = $htmlSanitizer->getForAi($rawHtml, $this->page->url, $maxLength);
 
             Log::debug('📝 [PageRecapJob] Raw HTML sanitized', [
                 'page_id' => $this->page->id,

@@ -18,11 +18,13 @@ use Illuminate\Support\Facades\Log;
  * Env/config:
  * - LM_STUDIO_OPENAPI_BASE_URL
  * - LM_STUDIO_OPENAPI_MODEL
+ * - LM_STUDIO_VISION_MODEL (optional, for image requests)
  */
 class LmStudioOpenApiService
 {
     private string $baseUrl;
     private string $model;
+    private string $visionModel;
     private int $timeout;
     private int $maxTokens;
     private float $temperature;
@@ -32,6 +34,8 @@ class LmStudioOpenApiService
         $aiHosts = (array) config('lm_studio_openapi.base_urls');
         $this->baseUrl = (string) $aiHosts[array_rand($aiHosts)];
         $this->model = (string) config('lm_studio_openapi.model');
+        $visionModel = trim((string) config('lm_studio_openapi.vision_model', ''));
+        $this->visionModel = $visionModel !== '' ? $visionModel : $this->model;
         $this->timeout = (int) config('lm_studio_openapi.timeout');
         $this->maxTokens = (int) config('lm_studio_openapi.max_tokens');
         $this->temperature = (float) config('lm_studio_openapi.temperature');
@@ -50,6 +54,11 @@ class LmStudioOpenApiService
     public function getModel(): string
     {
         return $this->model;
+    }
+
+    public function getVisionModel(): string
+    {
+        return $this->visionModel;
     }
 
     /**
@@ -255,6 +264,9 @@ class LmStudioOpenApiService
      */
     public function chatWithImage(string $systemPrompt, string $userText, string $imageDataUrl, array $options = []): ?array
     {
+        // Default image requests to the vision model unless explicitly overridden.
+        $options['model'] ??= $this->visionModel;
+
         $messages = [
             ['role' => 'system', 'content' => $systemPrompt],
             [
@@ -266,7 +278,35 @@ class LmStudioOpenApiService
             ],
         ];
 
-        return $this->chat($messages, $options);
+        $response = $this->chat($messages, $options);
+        if ($response === null) {
+            return null;
+        }
+
+        // Graceful fallback: LM Studio may be running without Vision add-on; sending images then fails.
+        // In that case we retry once with a text-only payload so pipelines can continue (with lower accuracy).
+        if (
+            ($response['content'] ?? '') === ''
+            && $this->isVisionAddonNotLoadedError($response['error']['message'] ?? null)
+            && empty($options['__disable_vision_fallback'])
+        ) {
+            Log::warning('🖼️➡️📝 LM Studio Vision add-on not loaded; retrying request without images', [
+                'model' => (string) ($options['model'] ?? $this->model),
+                'url' => rtrim($this->baseUrl, '/') . '/chat/completions',
+            ]);
+
+            $textOnlyMessages = [
+                ['role' => 'system', 'content' => $systemPrompt],
+                ['role' => 'user', 'content' => $userText],
+            ];
+
+            $fallbackOptions = $options;
+            $fallbackOptions['__disable_vision_fallback'] = true;
+
+            return $this->chat($textOnlyMessages, $fallbackOptions);
+        }
+
+        return $response;
     }
 
     /**
@@ -306,6 +346,16 @@ class LmStudioOpenApiService
             ->acceptJson()
             ->asJson()
             ->timeout($this->timeout);
+    }
+
+    private function isVisionAddonNotLoadedError(mixed $message): bool
+    {
+        if (!is_string($message) || $message === '') {
+            return false;
+        }
+
+        return str_contains($message, 'Vision add-on is not loaded')
+            || str_contains($message, 'images were provided for processing');
     }
 }
 

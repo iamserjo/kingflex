@@ -9,6 +9,7 @@ use App\Events\PageRawHtmlFetched;
 use App\Models\Domain;
 use App\Models\Page;
 use App\Models\PageLink;
+use App\Services\Storage\PageAssetsStorageService;
 use GuzzleHttp\Exception\RequestException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -155,6 +156,9 @@ class PageCrawlObserver extends CrawlObserver
 
         try {
             return DB::transaction(function () use ($url, $urlHash, $html, $depth) {
+                /** @var PageAssetsStorageService $assets */
+                $assets = app(PageAssetsStorageService::class);
+
                 $page = Page::updateOrCreate(
                     [
                         'domain_id' => $this->domain->id,
@@ -162,11 +166,14 @@ class PageCrawlObserver extends CrawlObserver
                     ],
                     [
                         'url' => $url,
-                        'raw_html' => $html,
                         'depth' => $depth,
                         'last_crawled_at' => now(),
                     ]
                 );
+
+                $page->update([
+                    'raw_html' => $assets->storeRawHtml($page, $html),
+                ]);
 
                 return $page;
             });

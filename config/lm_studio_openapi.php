@@ -21,11 +21,23 @@ return [
 
     'model' => env('LM_STUDIO_OPENAPI_MODEL', 'ministralai/ministral-3-3b'),
 
+    /*
+    |--------------------------------------------------------------------------
+    | Vision model (images)
+    |--------------------------------------------------------------------------
+    |
+    | Model to use specifically for image requests (chatWithImage).
+    | Falls back to "model" when not set.
+    |
+    */
+    'vision_model' => env('LM_STUDIO_VISION_MODEL'),
+
     'timeout' => (int) env('LM_STUDIO_OPENAPI_TIMEOUT', 120),
 
     'max_tokens' => (int) env('LM_STUDIO_OPENAPI_MAX_TOKENS', 2048),
 
     'temperature' => (float) env('LM_STUDIO_OPENAPI_TEMPERATURE', 0.2),
 ];
+
 
 

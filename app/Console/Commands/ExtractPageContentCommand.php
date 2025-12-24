@@ -8,10 +8,10 @@ use App\Models\Domain;
 use App\Models\Page;
 use App\Services\Playwright\ContentExtractorService;
 use App\Services\Redis\PageLockService;
+use App\Services\Storage\PageAssetsStorageService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 
 /**
@@ -41,6 +41,7 @@ class ExtractPageContentCommand extends Command
     public function __construct(
         private readonly ContentExtractorService $contentExtractor,
         private readonly PageLockService $lockService,
+        private readonly PageAssetsStorageService $assets,
     ) {
         parent::__construct();
     }
@@ -163,17 +164,16 @@ class ExtractPageContentCommand extends Command
         ]);
 
         try {
-            $screenshotsBase = trim((string) config('crawler.screenshots_path', 'screenshots'), '/');
-            $screenshotRelativePath = null;
             $screenshotAbsolutePath = null;
+            $screenshotTempExt = 'png';
 
             // Always attempt full-page screenshot for Stage 1 (requirement)
-            if ($screenshotsBase !== '') {
-                $timestamp = now()->format('Ymd_His');
-                $token = Str::uuid()->toString();
-                $screenshotRelativePath = "{$screenshotsBase}/stage1/{$page->id}-{$timestamp}-{$token}.png";
-                $screenshotAbsolutePath = storage_path('app/' . $screenshotRelativePath);
-                Storage::disk('local')->makeDirectory(dirname($screenshotRelativePath));
+            $timestamp = now()->format('Ymd_His');
+            $token = Str::uuid()->toString();
+            $screenshotAbsolutePath = storage_path("app/tmp/page-screenshots/{$page->id}-{$timestamp}-{$token}.{$screenshotTempExt}");
+            $dir = dirname($screenshotAbsolutePath);
+            if (!is_dir($dir)) {
+                mkdir($dir, 0755, true);
             }
 
             // Extract content with Playwright
@@ -195,19 +195,30 @@ class ExtractPageContentCommand extends Command
 
             $this->info("   ✅ Content extracted ({$extractResult['loadTimeMs']}ms)");
 
+            /** @var string $rawHtml */
+            $rawHtml = (string) ($extractResult['rawHtml'] ?? '');
+            /** @var string $purified */
+            $purified = (string) ($extractResult['content'] ?? '');
+
+            $rawHtmlUrl = $this->assets->storeRawHtml($page, $rawHtml);
+            $purifiedUrl = $this->assets->storePurifiedContent($page, $purified);
+
             // Update page with extracted content
             $updateData = [
-                'raw_html' => $extractResult['rawHtml'],
-                'content_with_tags_purified' => $extractResult['content'],
+                'raw_html' => $rawHtmlUrl,
+                'content_with_tags_purified' => $purifiedUrl,
                 'title' => $extractResult['title'] ?? $page->title,
                 'meta_description' => $extractResult['description'],
                 'last_crawled_at' => now(),
             ];
 
             // Persist screenshot path if it was saved
-            if (($extractResult['screenshotSaved'] ?? false) === true && $screenshotRelativePath !== null) {
-                $updateData['screenshot_path'] = $screenshotRelativePath;
+            if (($extractResult['screenshotSaved'] ?? false) === true && $screenshotAbsolutePath !== null && is_file($screenshotAbsolutePath)) {
+                $screenshotUrl = $this->assets->storeScreenshotFromLocalFile($page, $screenshotAbsolutePath, $screenshotTempExt);
+                $updateData['screenshot_path'] = $screenshotUrl;
                 $updateData['screenshot_taken_at'] = now();
+
+                @unlink($screenshotAbsolutePath);
             } elseif (!empty($extractResult['screenshotError'])) {
                 Log::warning('🌐 [Stage1:Extract] Screenshot capture failed', [
                     'page_id' => $page->id,
@@ -225,13 +236,13 @@ class ExtractPageContentCommand extends Command
 
             $page->update($updateData);
 
-            $this->info("   📄 Raw HTML: " . strlen($extractResult['rawHtml'] ?? '') . " chars");
-            $this->info("   📝 Purified: " . strlen($extractResult['content'] ?? '') . " chars");
+            $this->info("   📄 Raw HTML stored in S3");
+            $this->info("   📝 Purified stored in S3");
 
             Log::info('🌐 [Stage1:Extract] Content saved', [
                 'page_id' => $page->id,
-                'raw_html_length' => strlen($extractResult['rawHtml'] ?? ''),
-                'content_length' => strlen($extractResult['content'] ?? ''),
+                'raw_html_length' => strlen($rawHtml),
+                'content_length' => strlen($purified),
                 'has_title' => !empty($extractResult['title']),
                 'has_description' => !empty($extractResult['description']),
                 'has_keywords' => !empty($extractResult['keywords']),
@@ -262,7 +273,7 @@ class ExtractPageContentCommand extends Command
                 'error' => $e->getMessage(),
                 'trace' => $e->getTraceAsString(),
             ]);
-            return false;
+            throw $e;
         }
     }
 

@@ -10,7 +10,6 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
-use Illuminate\Database\Eloquent\Relations\HasOne;
 
 /**
  * Page model for storing crawled pages.
@@ -57,7 +56,6 @@ use Illuminate\Database\Eloquent\Relations\HasOne;
  * @property-read TypeStructure|null $productType
  * @property-read Collection<int, PageLink> $inboundLinks
  * @property-read Collection<int, PageLink> $outboundLinks
- * @property-read Collection<int, PageScreenshot> $screenshots
  * @property-read Product|null $product
  * @property-read Article|null $article
  * @property-read Contact|null $contact
@@ -196,26 +194,6 @@ class Page extends Model
     public function outboundLinks(): HasMany
     {
         return $this->hasMany(PageLink::class, 'source_page_id');
-    }
-
-    /**
-     * Get screenshots for this page.
-     *
-     * @return HasMany<PageScreenshot, $this>
-     */
-    public function screenshots(): HasMany
-    {
-        return $this->hasMany(PageScreenshot::class);
-    }
-
-    /**
-     * Get the latest screenshot for this page.
-     *
-     * @return HasOne<PageScreenshot, $this>
-     */
-    public function latestScreenshot(): HasOne
-    {
-        return $this->hasOne(PageScreenshot::class)->latestOfMany();
     }
 
     /**

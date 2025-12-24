@@ -8,6 +8,7 @@ use App\Events\HtmlDomReady;
 use App\Events\PageRendered;
 use App\Models\Domain;
 use App\Models\Page;
+use App\Services\Storage\PageAssetsStorageService;
 use Illuminate\Support\Facades\Log;
 use Spatie\Browsershot\Browsershot;
 use Spatie\Crawler\Crawler;
@@ -83,14 +84,18 @@ class WebCrawlerService
         Log::info('Rendering page with JavaScript', ['url' => $page->url]);
 
         try {
+            /** @var PageAssetsStorageService $assets */
+            $assets = app(PageAssetsStorageService::class);
+
             $browsershot = $this->createBrowsershot($page->url);
 
             // Get rendered HTML
             $renderedHtml = $browsershot->bodyHtml();
+            $rawHtmlUrl = $assets->storeRawHtml($page, $renderedHtml);
 
             // Update page with rendered HTML
             $page->update([
-                'raw_html' => $renderedHtml,
+                'raw_html' => $rawHtmlUrl,
                 'last_crawled_at' => now(),
             ]);
 
@@ -135,24 +140,20 @@ class WebCrawlerService
         ]);
 
         try {
+            /** @var PageAssetsStorageService $assets */
+            $assets = app(PageAssetsStorageService::class);
+
             // Configure screenshot settings
             $format = config('crawler.screenshot_format', 'png');
             $quality = config('crawler.screenshot_quality', 90);
             $fullPage = config('crawler.screenshot_full_page', true);
 
-            // Generate filename
-            $filename = sprintf(
-                '%s/%d_%s.%s',
-                config('crawler.screenshots_path'),
-                $page->id,
-                now()->format('Y-m-d_His'),
-                $format
-            );
-
-            $fullPath = storage_path('app/' . $filename);
+            $timestamp = now()->format('Ymd_His');
+            $token = \Illuminate\Support\Str::uuid()->toString();
+            $tempPath = storage_path("app/tmp/crawler-screenshots/{$page->id}-{$timestamp}-{$token}.{$format}");
 
             // Ensure directory exists
-            $directory = dirname($fullPath);
+            $directory = dirname($tempPath);
             if (!is_dir($directory)) {
                 Log::debug('Creating screenshot directory', ['path' => $directory]);
                 mkdir($directory, 0755, true);
@@ -170,44 +171,29 @@ class WebCrawlerService
                 $browsershot->setScreenshotType('jpeg', $quality);
             }
 
-            Log::debug('Saving screenshot', ['path' => $fullPath]);
-            $browsershot->save($fullPath);
+            Log::debug('Saving screenshot', ['path' => $tempPath]);
+            $browsershot->save($tempPath);
 
             // Verify file was created
-            if (!file_exists($fullPath)) {
-                Log::error('Screenshot file was not created', ['path' => $fullPath]);
+            if (!file_exists($tempPath)) {
+                Log::error('Screenshot file was not created', ['path' => $tempPath]);
                 return null;
             }
 
-            // Get image dimensions
-            $imageInfo = @getimagesize($fullPath);
-            $width = $imageInfo[0] ?? null;
-            $height = $imageInfo[1] ?? null;
-            $fileSize = @filesize($fullPath);
+            $screenshotUrl = $assets->storeScreenshotFromLocalFile($page, $tempPath, (string) $format);
+            @unlink($tempPath);
 
-            Log::debug('Screenshot file info', [
-                'width' => $width,
-                'height' => $height,
-                'file_size' => $fileSize,
-            ]);
-
-            // Create screenshot record
-            $screenshot = $page->screenshots()->create([
-                'path' => $filename,
-                'format' => $format,
-                'width' => $width,
-                'height' => $height,
-                'file_size' => $fileSize ?: null,
+            $page->update([
+                'screenshot_path' => $screenshotUrl,
+                'screenshot_taken_at' => now(),
             ]);
 
             Log::info('✅ Screenshot saved successfully', [
                 'page_id' => $page->id,
-                'screenshot_id' => $screenshot->id,
-                'path' => $filename,
-                'size' => $fileSize,
+                'url' => $screenshotUrl,
             ]);
 
-            return $filename;
+            return $screenshotUrl;
         } catch (\Exception $e) {
             Log::error('❌ Failed to take screenshot', [
                 'page_id' => $page->id,
@@ -215,7 +201,7 @@ class WebCrawlerService
                 'error' => $e->getMessage(),
                 'trace' => $e->getTraceAsString(),
             ]);
-            return null;
+            throw $e;
         }
     }
 

@@ -9,6 +9,7 @@ use App\Models\TypeStructure;
 use App\Services\Json\JsonParserService;
 use App\Services\LmStudioOpenApi\LmStudioOpenApiService;
 use App\Services\Pages\PageAttributesCandidateService;
+use App\Services\Pages\PageScreenshotDataUrlService;
 use App\Services\Redis\PageLockService;
 use Illuminate\Console\Command;
 use Illuminate\Database\Eloquent\Builder;
@@ -16,7 +17,7 @@ use Illuminate\Support\Facades\Log;
 use RuntimeException;
 
 /**
- * Extract product attributes from Page::content_with_tags_purified into:
+ * Extract product attributes from page screenshot (vision) into:
  * - pages.json_attributes (follows type_structures.structure)
  * - pages.sku / pages.product_code / pages.product_model_number
  * - pages.attributes_extracted_at
@@ -32,23 +33,19 @@ final class ExtractPageAttributesCommand extends Command
                             {--max-attempts= : (Deprecated) Max retry attempts per page}
                             {--sleep-ms=0 : Sleep between retries in ms}';
 
-    protected $description = 'Extract product attributes + SKU/product_code/model_number from content_with_tags_purified using LM Studio OpenAPI';
+    protected $description = 'Extract product attributes + SKU/product_code/model_number from screenshot using OpenAI-compatible vision model (LM Studio OpenAPI)';
 
     private const  STAGE = 'attributes';
 
-    private const  MAX_USER_CONTENT_CHARS = 40000;
-
-    private ?string $extractModel = null;
+    private const  MAX_USER_CONTENT_CHARS = 4000;
 
     public function __construct(
         private readonly LmStudioOpenApiService $openAi,
         private readonly PageLockService $lockService,
         private readonly PageAttributesCandidateService $candidates,
+        private readonly PageScreenshotDataUrlService $screenshotDataUrl,
     ) {
         parent::__construct();
-
-        $model = trim((string) env('LM_STUDIO_EXTRACT_ATTRIBUTES_MODEL', ''));
-        $this->extractModel = $model !== '' ? $model : null;
     }
 
     public function handle(): int
@@ -65,10 +62,10 @@ final class ExtractPageAttributesCommand extends Command
         $sleepMs = max(0, (int) $this->option('sleep-ms'));
 
         $this->logSeparator();
-        $this->info('🧩 EXTRACT PAGE ATTRIBUTES (content_with_tags_purified + type_structures.structure)');
+        $this->info('🧩 EXTRACT PAGE ATTRIBUTES (Screenshot + type_structures.structure)');
         $this->info("⏰ Started at: " . now()->format('Y-m-d H:i:s'));
         $this->info("📡 API: {$this->openAi->getBaseUrl()}");
-        $this->info("🧠 Model: " . ($this->extractModel ?? $this->openAi->getModel()));
+        $this->info("🧠 Vision model: {$this->openAi->getVisionModel()}");
         $this->logSeparator();
 
         if (!$this->openAi->isConfigured()) {
@@ -179,8 +176,8 @@ final class ExtractPageAttributesCommand extends Command
             return true;
         }
 
-        if (empty($page->content_with_tags_purified)) {
-            $this->warn('   ⚠️  content_with_tags_purified is empty; skipping');
+        if (empty($page->screenshot_path)) {
+            $this->warn('   ⚠️  screenshot_path is empty; skipping');
             return false;
         }
 
@@ -206,6 +203,7 @@ final class ExtractPageAttributesCommand extends Command
             'page_id' => $page->id,
             'url' => $page->url,
             'product_type_id' => $page->product_type_id,
+            'screenshot_path' => $page->screenshot_path,
         ]);
 
         try {
@@ -213,8 +211,18 @@ final class ExtractPageAttributesCommand extends Command
                 'structure' => $structure,
             ])->render();
 
-            $userText = $this->buildUserText($page);
-            $this->info('   📝 User content length: ' . strlen($userText) . ' chars');
+            $userText = $this->buildUserTextForVision($page);
+            $this->info('   📝 Context length (text only): ' . strlen($userText) . ' chars');
+
+            $imageDataUrl = $this->screenshotDataUrl->forPage($page, 0, 3500);
+            if ($imageDataUrl === null) {
+                $this->warn('   ⚠️  Screenshot file does not exist or unsupported; skipping');
+                Log::warning('🧩 [ExtractAttributes] Screenshot missing/unsupported on disk', [
+                    'page_id' => $page->id,
+                    'screenshot_path' => $page->screenshot_path,
+                ]);
+                return false;
+            }
 
             $requiredKeys = ['sku', 'product_code', 'product_model_number', 'attributes'];
 
@@ -233,22 +241,14 @@ final class ExtractPageAttributesCommand extends Command
 
                 $this->line("   🤖 Attempt #{$attempt}...");
 
-                // LM Studio OpenAI-compatible servers often support only:
-                // - response_format.type = "text"
-                // - response_format.type = "json_schema"
-                // We enforce JSON via the prompt and parse the returned text.
                 $options = [
                     'response_format' => ['type' => 'text'],
                 ];
-                if ($this->extractModel !== null) {
-                    $options['model'] = $this->extractModel;
-                }
 
-                $response = $this->openAi->chat(
-                    messages: [
-                        ['role' => 'system', 'content' => $systemPrompt],
-                        ['role' => 'user', 'content' => $userText],
-                    ],
+                $response = $this->openAi->chatWithImage(
+                    systemPrompt: $systemPrompt,
+                    userText: $userText,
+                    imageDataUrl: $imageDataUrl,
                     options: $options,
                 );
 
@@ -375,16 +375,16 @@ final class ExtractPageAttributesCommand extends Command
         }
     }
 
-    private function buildUserText(Page $page): string
+    private function buildUserTextForVision(Page $page): string
     {
         $parts = [];
         $parts[] = 'URL: ' . (string) $page->url;
         if (!empty($page->title)) {
             $parts[] = 'Title: ' . (string) $page->title;
         }
-
-        $parts[] = "\n=== VISIBLE CONTENT ON THE PAGE (HTML) ===";
-        $parts[] = (string) $page->content_with_tags_purified;
+        if (!empty($page->meta_description)) {
+            $parts[] = 'Meta description: ' . (string) $page->meta_description;
+        }
 
         $content = implode("\n", $parts);
 
@@ -394,6 +394,8 @@ final class ExtractPageAttributesCommand extends Command
 
         return $content;
     }
+
+    // Screenshot data URL is now provided by App\Services\Pages\PageScreenshotDataUrlService (S3-only).
 
     private function normalizeNullableString(mixed $value, int $maxLen): ?string
     {

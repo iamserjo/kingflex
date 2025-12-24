@@ -11,6 +11,8 @@ use App\Models\Page;
 use App\Models\Product;
 use App\Services\Html\HtmlSanitizerService;
 use App\Services\OpenRouter\OpenRouterService;
+use App\Services\Pages\PageScreenshotDataUrlService;
+use App\Services\Storage\PageAssetsStorageService;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -49,7 +51,12 @@ class AnalyzePageWithAiJob implements ShouldQueue
     /**
      * Execute the job.
      */
-    public function handle(OpenRouterService $openRouter, HtmlSanitizerService $sanitizer): void
+    public function handle(
+        OpenRouterService $openRouter,
+        HtmlSanitizerService $sanitizer,
+        PageAssetsStorageService $assets,
+        PageScreenshotDataUrlService $screenshots,
+    ): void
     {
         if (!$openRouter->isConfigured()) {
             Log::warning('OpenRouter is not configured, skipping AI analysis', [
@@ -68,7 +75,7 @@ class AnalyzePageWithAiJob implements ShouldQueue
         $systemPrompt = view('ai-prompts.analyze-page')->render();
 
         // Prepare content for analysis using sanitizer
-        $content = $this->prepareContent($sanitizer);
+        $content = $this->prepareContent($sanitizer, $assets);
 
         if (empty($content)) {
             Log::warning('No content available for analysis', [
@@ -79,7 +86,7 @@ class AnalyzePageWithAiJob implements ShouldQueue
 
         // Call AI based on whether we're using screenshot
         $result = $this->useScreenshot
-            ? $this->analyzeWithScreenshot($openRouter, $systemPrompt, $content)
+            ? $this->analyzeWithScreenshot($openRouter, $screenshots, $systemPrompt, $content)
             : $openRouter->chatJson($systemPrompt, $content);
 
         if ($result === null) {
@@ -109,13 +116,14 @@ class AnalyzePageWithAiJob implements ShouldQueue
     /**
      * Prepare content for AI analysis.
      */
-    private function prepareContent(HtmlSanitizerService $sanitizer): string
+    private function prepareContent(HtmlSanitizerService $sanitizer, PageAssetsStorageService $assets): string
     {
-        $html = $this->page->raw_html;
-
-        if (empty($html)) {
+        $rawHtmlUrl = (string) ($this->page->raw_html ?? '');
+        if ($rawHtmlUrl === '') {
             return '';
         }
+
+        $html = $assets->getTextFromUrl($rawHtmlUrl);
 
         // Use sanitizer to clean HTML and extract metadata
         return $sanitizer->getForAi($html, $this->page->url, 50000);
@@ -126,27 +134,29 @@ class AnalyzePageWithAiJob implements ShouldQueue
      *
      * @return array<string, mixed>|null
      */
-    private function analyzeWithScreenshot(OpenRouterService $openRouter, string $systemPrompt, string $content): ?array
+    private function analyzeWithScreenshot(
+        OpenRouterService $openRouter,
+        PageScreenshotDataUrlService $screenshots,
+        string $systemPrompt,
+        string $content,
+    ): ?array
     {
-        $screenshot = $this->page->latestScreenshot;
-
-        if ($screenshot === null) {
+        if (empty($this->page->screenshot_path)) {
             Log::warning('No screenshot available, falling back to text analysis', [
                 'page_id' => $this->page->id,
             ]);
             return $openRouter->chatJson($systemPrompt, $content);
         }
 
-        $imageBase64 = $screenshot->getBase64();
-
-        if ($imageBase64 === null) {
+        $imageDataUrl = $screenshots->forPage($this->page);
+        if ($imageDataUrl === null) {
             Log::warning('Failed to read screenshot, falling back to text analysis', [
                 'page_id' => $this->page->id,
             ]);
             return $openRouter->chatJson($systemPrompt, $content);
         }
 
-        return $openRouter->chatWithImage($systemPrompt, $content, $imageBase64);
+        return $openRouter->chatWithImage($systemPrompt, $content, $imageDataUrl);
     }
 
     /**
