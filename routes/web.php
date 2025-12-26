@@ -13,9 +13,6 @@ use Illuminate\Support\Facades\Route;
 Route::get('/', [SearchController::class, 'home'])->name('home');
 Route::post('/search', [SearchController::class, 'search'])->name('search');
 
-Route::get('/chatboot', [ChatBootController::class, 'index'])->name('chatboot');
-Route::post('/chatboot/message', [ChatBootController::class, 'message'])->name('chatboot.message');
-
 Route::middleware([NoStoreWhenDebug::class])->group(function () {
     Route::get('/qdrant', [QdrantSearchController::class, 'index'])->name('qdrant.index');
     Route::get('/qdrant/stats', [QdrantSearchController::class, 'stats'])->name('qdrant.stats');
