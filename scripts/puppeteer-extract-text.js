@@ -125,8 +125,49 @@ async function extractText() {
         // Take screenshot (optional). Never fail extraction because of screenshot issues.
         let screenshotSaved = false;
         let screenshotError = null;
+        let openingTextClicked = false;
+        let openingTextClickError = null;
         if (screenshotPath) {
             try {
+                // Requirement for page:extract:
+                // Click "opening-text" element (if present) before taking screenshot.
+                try {
+                    const openingTextSelectors = ['#opening-text', '.opening-text', 'opening-text'];
+                    let lastClickError = null;
+
+                    for (const selector of openingTextSelectors) {
+                        const locator = page.locator(selector).first();
+                        const count = await locator.count();
+                        if (count === 0) continue;
+
+                        try {
+                            await locator.scrollIntoViewIfNeeded({ timeout: 1000 });
+                        } catch {
+                            // ignore scroll errors
+                        }
+
+                        try {
+                            await locator.click({ timeout: 1500 });
+                            openingTextClicked = true;
+                            lastClickError = null;
+                            break;
+                        } catch (e) {
+                            lastClickError = e?.message || String(e);
+                        }
+                    }
+
+                    if (!openingTextClicked && lastClickError) {
+                        openingTextClickError = lastClickError;
+                    }
+                } catch (e) {
+                    openingTextClickError = e?.message || String(e);
+                }
+
+                // Give the UI a moment to expand/animate after the click.
+                if (openingTextClicked) {
+                    await page.waitForTimeout(200);
+                }
+
                 // Remove layout/marketing chrome before screenshot (requirements for page:extract)
                 await page.evaluate(() => {
                     for (const el of document.querySelectorAll('header, footer, #top-banner, .cl-dialog, #credential_picker_iframe')) {
@@ -422,6 +463,8 @@ async function extractText() {
                 screenshotPath: screenshotPath,
                 screenshotSaved: screenshotSaved,
                 screenshotError: screenshotError,
+                openingTextClicked: openingTextClicked,
+                openingTextClickError: openingTextClickError,
                 content: cleanedHtml,
                 rawHtml: rawHtml,
                 extractedUrls: extractedUrls,
