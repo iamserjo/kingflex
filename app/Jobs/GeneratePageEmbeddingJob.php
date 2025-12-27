@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Jobs;
 
+use App\Enums\PageType;
 use App\Models\Page;
 use App\Services\OpenRouter\OpenRouterService;
 use App\Services\Storage\PageAssetsStorageService;
@@ -57,7 +58,7 @@ class GeneratePageEmbeddingJob implements ShouldQueue
         Log::info('🔢 Generating embedding for page', [
             'page_id' => $this->page->id,
             'url' => $this->page->url,
-            'page_type' => $this->page->page_type,
+            'page_type' => $this->page->page_type?->value,
             'has_title' => !empty($this->page->title),
             'has_product_summary' => !empty($this->page->product_summary),
         ]);
@@ -120,8 +121,8 @@ class GeneratePageEmbeddingJob implements ShouldQueue
         }
 
         // Add page type
-        if (!empty($this->page->page_type)) {
-            $parts[] = "Type: {$this->page->page_type}";
+        if ($this->page->page_type !== null) {
+            $parts[] = "Type: {$this->page->page_type->value}";
         }
 
         // Add URL for context
@@ -180,8 +181,7 @@ class GeneratePageEmbeddingJob implements ShouldQueue
     private function generateTypeSpecificEmbeddings(OpenRouterService $openRouter): void
     {
         match ($this->page->page_type) {
-            Page::TYPE_PRODUCT => $this->generateProductEmbedding($openRouter),
-            Page::TYPE_ARTICLE => $this->generateArticleEmbedding($openRouter),
+            PageType::PRODUCT => $this->generateProductEmbedding($openRouter),
             default => null,
         };
     }
@@ -200,7 +200,6 @@ class GeneratePageEmbeddingJob implements ShouldQueue
         $text = implode("\n", array_filter([
             "Product: {$product->name}",
             $product->description ? "Description: {$product->description}" : null,
-            $product->sku ? "SKU: {$product->sku}" : null,
             $product->price ? "Price: {$product->getFormattedPrice()}" : null,
         ]));
 

@@ -111,8 +111,8 @@ class ExtractSearchTagsJob implements ShouldQueue
         }
 
         // Add page type
-        if (!empty($this->page->page_type)) {
-            $parts[] = "Page Type: {$this->page->page_type}";
+        if ($this->page->page_type !== null) {
+            $parts[] = "Page Type: {$this->page->page_type->value}";
         }
 
         // Add sanitized HTML

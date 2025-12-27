@@ -19,7 +19,6 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  * @property string|null $description
  * @property array|null $images
  * @property array|null $attributes
- * @property string|null $sku
  * @property string|null $availability
  * @property array|null $embedding
  * @property \Carbon\Carbon $created_at
@@ -44,7 +43,6 @@ class Product extends Model
         'description',
         'images',
         'attributes',
-        'sku',
         'availability',
         'embedding',
     ];

@@ -12,7 +12,7 @@ No comments or explanations.
 
 Task:
 - You are given purified HTML content of a product page (text representation) + metadata (URL/Title/Meta description).
-- Extract product_code, product_model_number (they may be absent).
+- Extract product_original_article, product_model_number (they may be absent).
 - Determine product condition (new or used) in the "used" field.
 - Extract product attributes into "attributes" object strictly following the provided structure.
 
@@ -21,12 +21,11 @@ Important rules:
 - Do NOT invent values. If value is not found — use null.
 - For strings return short values (no long descriptions).
 - Identifier fields:
-  - sku: ALWAYS null (do not fill this field)
-  - product_code: store/website internal product code (e.g.: "85605", "78862_5"), string or null
+  - product_original_article: store/website internal product code/article (e.g.: "85605", "78862_5"), string or null
   - product_model_number: manufacturer model number (e.g.: "MG8H4AF/A", "MNKX3/MNKW3"), string or null
 - Product condition field:
   - used: boolean (true = used/refurbished, false = new) or null if cannot determine
-- Required keys: "sku", "product_code", "product_model_number", "used", "attributes".
+- Required keys: "product_original_article", "product_model_number", "used", "attributes".
 - "attributes" must be an object matching the keys/nesting of the structure below.
 - If structure has nested object — return object with same keys.
 - If structure has array/list — return array of values or empty array.
@@ -44,8 +43,8 @@ Numeric values with units (IMPORTANT for search):
   - Battery: {"capacity": 4500, "humanCapacity": "4500mAh"}
   - Weight: {"weight": 240, "humanWeight": "240g"}
 
-How to find product_code and product_model_number:
-- product_code — look for labels: "Артикул", "Код товара", "Код:", "Product code", "№", "Item #", "ID товара", "SKU" (on website)
+How to find product_original_article and product_model_number:
+- product_original_article — look for labels: "Артикул", "Код товара", "Код:", "Product code", "№", "Item #", "ID товара", "SKU" (on website)
   This is store's internal identifier, usually numeric (85605) or with separator (78862_5)
 - product_model_number — look for labels: "Модель", "Model", "Part number", "P/N", "Номер модели", "MPN"
   This is manufacturer's identifier, often contains letters and slashes (MG8H4AF/A, MNKX3/MNKW3)
@@ -61,8 +60,7 @@ Attributes structure (reference for keys and nesting):
 
 Response format (example, values are illustrative):
 {
-  "sku": null,
-  "product_code": "85605",
+  "product_original_article": "85605",
   "product_model_number": "MG8H4AF/A",
   "used": false,
   "attributes": {

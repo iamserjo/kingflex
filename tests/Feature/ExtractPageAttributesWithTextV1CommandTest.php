@@ -19,7 +19,7 @@ beforeEach(function () {
     app()->instance(PageLockService::class, $lock);
 });
 
-test('command extracts attributes from purified HTML text and stores json_attributes + sku/product_code/model_number', function () {
+test('command extracts attributes from purified HTML text and stores json_attributes + product_original_article/model_number', function () {
     Storage::fake('s3');
     config(['filesystems.disks.s3.url' => 'https://s3.test']);
 
@@ -65,8 +65,7 @@ test('command extracts attributes from purified HTML text and stores json_attrib
     $openAi->shouldReceive('chatJson')
         ->once()
         ->andReturn([
-            'sku' => null,
-            'product_code' => '85605',
+            'product_original_article' => '85605',
             'product_model_number' => 'MG8H4AF/A',
             'used' => false,
             'attributes' => [
@@ -87,10 +86,10 @@ test('command extracts attributes from purified HTML text and stores json_attrib
     $page->refresh();
 
     expect($page->attributes_extracted_at)->not->toBeNull()
-        ->and($page->sku)->toBeNull()
-        ->and($page->product_code)->toBe('85605')
+        ->and($page->product_metadata_extracted_at)->not->toBeNull()
+        ->and($page->product_original_article)->toBe('85605')
         ->and($page->product_model_number)->toBe('MG8H4AF/A')
-        ->and($page->is_used)->toBe(false)
+        ->and($page->is_product_used)->toBe(false)
         ->and($page->json_attributes)->toMatchArray([
             'producer' => 'acme',
             'model' => 'super phone pro',
@@ -233,15 +232,13 @@ test('command retries on missing required keys', function () {
         ->andReturn(
             // First attempt: missing 'attributes' key
             [
-                'sku' => null,
-                'product_code' => '85605',
+                'product_original_article' => '85605',
                 'product_model_number' => null,
                 'used' => true,
             ],
             // Second attempt: complete
             [
-                'sku' => null,
-                'product_code' => '85605',
+                'product_original_article' => '85605',
                 'product_model_number' => null,
                 'used' => true,
                 'attributes' => ['producer' => 'acme'],
@@ -258,9 +255,9 @@ test('command retries on missing required keys', function () {
 
     $page->refresh();
     expect($page->attributes_extracted_at)->not->toBeNull()
-        ->and($page->sku)->toBeNull()
-        ->and($page->product_code)->toBe('85605')
-        ->and($page->is_used)->toBe(true)
+        ->and($page->product_metadata_extracted_at)->not->toBeNull()
+        ->and($page->product_original_article)->toBe('85605')
+        ->and($page->is_product_used)->toBe(true)
         ->and($page->json_attributes)->toMatchArray(['producer' => 'acme']);
 });
 

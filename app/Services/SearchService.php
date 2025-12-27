@@ -152,7 +152,7 @@ class SearchService
                 'title' => $page->title,
                 'summary' => $page->summary,
                 'recap_content' => $page->recap_content,
-                'page_type' => $page->page_type,
+                'page_type' => $page->page_type?->value,
                 'score' => round($similarity, 4),
                 'distance' => round($page->distance, 6),
             ];

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Console\Commands;
 
+use App\Enums\PageType;
 use App\Models\Page;
 use App\Services\Json\JsonParserService;
 use App\Services\LmStudioOpenApi\LmStudioOpenApiService;
@@ -20,7 +21,7 @@ use Illuminate\Support\Facades\Log;
  *
  * Responsibilities:
  * - Find product pages with extracted content that are missing product fields
- * - Generate product_summary/product specs/abilities/predicted search queries
+ * - Generate product_summary
  *
  * Uses Redis-based locking to prevent duplicate processing.
  */
@@ -156,7 +157,7 @@ class GeneratePageRecapCommand extends Command
             Log::info('🤖 [Stage2:ProductFields] Skipped (not product)', [
                 'page_id' => $page->id,
                 'url' => $page->url,
-                'page_type' => $page->page_type,
+                    'page_type' => $page->page_type?->value,
                 'is_product' => $page->is_product,
             ]);
             return true;
@@ -269,9 +270,6 @@ class GeneratePageRecapCommand extends Command
 
                 $parsed = $this->jsonParser->parseWithKeys($raw, [
                     'product_summary',
-                    'product_summary_specs',
-                    'product_abilities',
-                    'product_predicted_search_text',
                 ]);
 
                 if ($parsed === null) {
@@ -286,19 +284,13 @@ class GeneratePageRecapCommand extends Command
                 }
 
                 $productSummary = $this->normalizeNullableText($parsed['product_summary'] ?? null);
-                $productSpecs = $this->normalizeNullableText($parsed['product_summary_specs'] ?? null);
-                $productAbilities = $this->normalizeNullableText($parsed['product_abilities'] ?? null);
-                $predictedSearch = $this->normalizePredictedSearchText($parsed['product_predicted_search_text'] ?? null);
 
-                if ($productSummary === null || $productSpecs === null || $productAbilities === null || $predictedSearch === null) {
+                if ($productSummary === null) {
                     $this->warn('   ⚠️  Parsed JSON has empty required fields, retrying...');
                     Log::warning('🤖 [Stage2:ProductFields] Empty fields after normalization', [
                         'page_id' => $page->id,
                         'attempt' => $attempt,
                         'has_product_summary' => $productSummary !== null,
-                        'has_product_specs' => $productSpecs !== null,
-                        'has_product_abilities' => $productAbilities !== null,
-                        'has_predicted_search' => $predictedSearch !== null,
                     ]);
                     $this->sleepIfNeeded($sleepMs);
                     continue;
@@ -307,9 +299,6 @@ class GeneratePageRecapCommand extends Command
                 // Save product fields (do NOT touch recap_content)
                 $page->update([
                     'product_summary' => $productSummary,
-                    'product_summary_specs' => $productSpecs,
-                    'product_abilities' => $productAbilities,
-                    'product_predicted_search_text' => $predictedSearch,
                 ]);
 
                 $this->info("   ✅ Product fields generated");
@@ -358,17 +347,11 @@ class GeneratePageRecapCommand extends Command
                     ->whereNotNull('last_crawled_at')
                     ->where(static function (Builder $q): void {
                         $q->where('is_product', true)
-                            ->orWhere('page_type', Page::TYPE_PRODUCT);
+                            ->orWhere('page_type', PageType::PRODUCT->value);
                     })
                     ->where(static function (Builder $q): void {
                         $q->whereNull('product_summary')
-                            ->orWhereNull('product_summary_specs')
-                            ->orWhereNull('product_abilities')
-                            ->orWhereNull('product_predicted_search_text')
-                            ->orWhere('product_summary', '')
-                            ->orWhere('product_summary_specs', '')
-                            ->orWhere('product_abilities', '')
-                            ->orWhere('product_predicted_search_text', '');
+                            ->orWhere('product_summary', '');
                     })
                     ->orderBy('last_crawled_at', 'desc');
             },
@@ -377,7 +360,7 @@ class GeneratePageRecapCommand extends Command
 
     private function isProductPage(Page $page): bool
     {
-        return $page->is_product === true || $page->page_type === Page::TYPE_PRODUCT;
+        return $page->is_product === true || $page->page_type === PageType::PRODUCT;
     }
 
     private function getRecapModelOverride(): ?string
@@ -403,45 +386,6 @@ class GeneratePageRecapCommand extends Command
         }
 
         return $s;
-    }
-
-    /**
-     * Normalize predicted search queries into a single comma-separated line.
-     * Must be 5-10 queries, comma-separated.
-     */
-    private function normalizePredictedSearchText(mixed $value): ?string
-    {
-        $s = $this->normalizeNullableText($value);
-        if ($s === null) {
-            return null;
-        }
-
-        $s = str_replace(["\r\n", "\n", "\r", ';'], ',', $s);
-
-        $rawParts = array_map('trim', explode(',', $s));
-
-        $seen = [];
-        $queries = [];
-        foreach ($rawParts as $part) {
-            if ($part === '') {
-                continue;
-            }
-            $key = mb_strtolower($part, 'UTF-8');
-            if (isset($seen[$key])) {
-                continue;
-            }
-            $seen[$key] = true;
-            $queries[] = $part;
-            if (count($queries) >= 10) {
-                break;
-            }
-        }
-
-        if (count($queries) < 5) {
-            return null;
-        }
-
-        return implode(', ', $queries);
     }
 
     private function logSeparator(string $char = '═'): void

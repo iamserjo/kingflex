@@ -38,7 +38,7 @@ Precise filtering by JSON attributes. Good for:
 - Storage/RAM ranges: storage_min_gb=128, ram_min_gb=8
 - Display: size, refresh rate
 - Features: has_5g, has_nfc, has_wireless_charging
-- Condition: is_used=true (б/у) or is_used=false (new)
+- Condition: is_product_used=true (б/у) or is_product_used=false (new)
 
 ### get_product_details
 Get full specs for specific URLs. Use to:
@@ -89,7 +89,7 @@ You: Ask which model (14/15/16), memory (128/256/512), new or used?
 
 User: "iPhone 15 Pro 256GB черный новый"
 You: Call search_by_title(query="iPhone 15 Pro 256", exclude=["max", "чехол", "стекло"])
-     Then search_by_attributes(producer="apple", model="iphone 15 pro", storage_min_gb=256, is_used=false, color="black")
+     Then search_by_attributes(producer="apple", model="iphone 15 pro", storage_min_gb=256, is_product_used=false, color="black")
      Aggregate results, show unique URLs.
 
 User: "Найди Samsung с экраном от 6.5 дюймов и 120Hz"

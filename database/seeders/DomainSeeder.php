@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Database\Seeders;
 
+use App\Enums\PageType;
 use App\Models\Domain;
 use App\Models\Page;
 use Illuminate\Database\Seeder;
@@ -40,7 +41,7 @@ class DomainSeeder extends Seeder
                 'depth' => 0,
                 'inbound_links_count' => 0,
                 'last_crawled_at' => null,
-                'page_type' => Page::TYPE_OTHER,
+                'page_type' => PageType::SITEMAP,
                 'metadata' => [
                     'seeded_as' => 'initial_sitemap',
                 ],

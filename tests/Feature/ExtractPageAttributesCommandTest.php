@@ -19,7 +19,7 @@ beforeEach(function () {
     app()->instance(PageLockService::class, $lock);
 });
 
-test('command extracts attributes and stores json_attributes + sku/product_code/model_number', function () {
+test('command extracts attributes and stores json_attributes + product_original_article/model_number', function () {
     Storage::fake('s3');
     config(['filesystems.disks.s3.url' => 'https://s3.test']);
 
@@ -73,8 +73,7 @@ test('command extracts attributes and stores json_attributes + sku/product_code/
         ->once()
         ->andReturn([
             'content' => json_encode([
-                'sku' => 'ABC-123',
-                'product_code' => 'PC-999',
+                'product_original_article' => 'PC-999',
                 'product_model_number' => 'MN-777',
                 'attributes' => [
                     'producer' => 'acme',
@@ -97,8 +96,8 @@ test('command extracts attributes and stores json_attributes + sku/product_code/
     $page->refresh();
 
     expect($page->attributes_extracted_at)->not->toBeNull()
-        ->and($page->sku)->toBe('ABC-123')
-        ->and($page->product_code)->toBe('PC-999')
+        ->and($page->product_metadata_extracted_at)->not->toBeNull()
+        ->and($page->product_original_article)->toBe('PC-999')
         ->and($page->product_model_number)->toBe('MN-777')
         ->and($page->json_attributes)->toMatchArray([
             'producer' => 'acme',

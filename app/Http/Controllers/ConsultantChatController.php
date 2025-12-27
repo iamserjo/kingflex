@@ -258,7 +258,7 @@ class ConsultantChatController extends Controller
                                 'type' => 'boolean',
                                 'description' => 'Must support wireless charging.',
                             ],
-                            'is_used' => [
+                            'is_product_used' => [
                                 'type' => 'boolean',
                                 'description' => 'Filter by new (false) or used/б-у (true).',
                             ],
@@ -318,7 +318,7 @@ class ConsultantChatController extends Controller
         $tokens = array_values(array_filter(array_map('trim', $tokens), static fn (string $t) => mb_strlen($t) >= 2));
 
         $builder = Page::query()
-            ->select(['url', 'title', 'json_attributes', 'is_used'])
+            ->select(['url', 'title', 'json_attributes', 'is_product_used'])
             ->whereNotNull('title')
             ->where('is_product', true);
 
@@ -347,7 +347,7 @@ class ConsultantChatController extends Controller
                 'model' => $attrs['model'] ?? null,
                 'storage' => $attrs['storage']['humanSize'] ?? null,
                 'color' => $attrs['color'] ?? null,
-                'is_used' => (bool) $page->is_used,
+                'is_product_used' => (bool) $page->is_product_used,
             ];
         }
 
@@ -371,7 +371,7 @@ class ConsultantChatController extends Controller
         $limit = max(1, min(20, (int) ($args['limit'] ?? 10)));
 
         $builder = Page::query()
-            ->select(['url', 'title', 'json_attributes', 'is_used'])
+            ->select(['url', 'title', 'json_attributes', 'is_product_used'])
             ->whereNotNull('json_attributes')
             ->where('is_product', true);
 
@@ -448,10 +448,11 @@ class ConsultantChatController extends Controller
             $filters['has_wireless_charging'] = true;
         }
 
-        // is_used (new vs used)
-        if (isset($args['is_used'])) {
-            $builder->where('is_used', (bool) $args['is_used']);
-            $filters['is_used'] = (bool) $args['is_used'];
+        // is_product_used (new vs used)
+        if (isset($args['is_product_used']) || isset($args['is_used'])) {
+            $v = isset($args['is_product_used']) ? (bool) $args['is_product_used'] : (bool) $args['is_used'];
+            $builder->where('is_product_used', $v);
+            $filters['is_product_used'] = $v;
         }
 
         $results = $builder->limit($limit)->get();
@@ -471,7 +472,7 @@ class ConsultantChatController extends Controller
                 'display_size' => $attrs['display']['humanSize'] ?? null,
                 'display_refresh_rate' => $attrs['display']['humanRefreshRate'] ?? null,
                 'color' => $attrs['color'] ?? null,
-                'is_used' => (bool) $page->is_used,
+                'is_product_used' => (bool) $page->is_product_used,
             ];
         }
 
@@ -502,7 +503,7 @@ class ConsultantChatController extends Controller
         }
 
         $pages = Page::query()
-            ->select(['url', 'title', 'json_attributes', 'is_used', 'product_summary', 'product_summary_specs'])
+            ->select(['url', 'title', 'json_attributes', 'is_product_used', 'product_summary'])
             ->whereIn('url', $urls)
             ->get();
 
@@ -512,9 +513,8 @@ class ConsultantChatController extends Controller
             $products[] = [
                 'url' => $page->url,
                 'title' => $page->title,
-                'is_used' => (bool) $page->is_used,
+                'is_product_used' => (bool) $page->is_product_used,
                 'summary' => $page->product_summary,
-                'specs' => $page->product_summary_specs,
                 'attributes' => [
                     'producer' => $attrs['producer'] ?? null,
                     'model' => $attrs['model'] ?? null,

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Jobs;
 
+use App\Enums\PageType;
 use App\Models\Article;
 use App\Models\Category;
 use App\Models\Contact;
@@ -166,11 +167,11 @@ class AnalyzePageWithAiJob implements ShouldQueue
      */
     private function updatePageWithResults(array $result): void
     {
-        $pageType = $result['page_type'] ?? null;
+        $pageType = $this->normalizePageType($result['page_type'] ?? null);
         $update = [
             'title' => $result['title'] ?? $this->page->title,
             'keywords' => $result['keywords'] ?? null,
-            'page_type' => $result['page_type'] ?? Page::TYPE_OTHER,
+            'page_type' => $pageType ?? PageType::MAIN,
             'metadata' => [
                 'depth_level' => $result['depth_level'] ?? null,
                 'language' => $result['language'] ?? null,
@@ -180,7 +181,7 @@ class AnalyzePageWithAiJob implements ShouldQueue
 
         // Legacy field rename: pages.summary -> pages.product_summary
         // Store only for product pages to avoid polluting non-product records.
-        if ($pageType === Page::TYPE_PRODUCT) {
+        if ($pageType === PageType::PRODUCT) {
             $update['product_summary'] = $result['summary'] ?? null;
         }
 
@@ -194,14 +195,47 @@ class AnalyzePageWithAiJob implements ShouldQueue
      */
     private function createTypeSpecificRecord(array $result): void
     {
-        $pageType = $result['page_type'] ?? null;
+        $pageType = $this->normalizePageType($result['page_type'] ?? null);
 
         match ($pageType) {
-            Page::TYPE_PRODUCT => $this->createProductRecord($result['product_data'] ?? []),
-            Page::TYPE_ARTICLE => $this->createArticleRecord($result['article_data'] ?? []),
-            Page::TYPE_CONTACT => $this->createContactRecord($result['contact_data'] ?? []),
-            Page::TYPE_CATEGORY => $this->createCategoryRecord($result['category_data'] ?? []),
+            PageType::PRODUCT => $this->createProductRecord($result['product_data'] ?? []),
+            PageType::CONTACT => $this->createContactRecord($result['contact_data'] ?? []),
+            PageType::CATEGORY => $this->createCategoryRecord($result['category_data'] ?? []),
             default => null,
+        };
+    }
+
+    private function normalizePageType(mixed $value): ?PageType
+    {
+        if ($value === null) {
+            return null;
+        }
+
+        if ($value instanceof PageType) {
+            return $value;
+        }
+
+        if (!is_string($value)) {
+            return null;
+        }
+
+        $s = trim($value);
+        if ($s === '') {
+            return null;
+        }
+
+        // Backward compatibility for legacy analyzer outputs.
+        $lower = strtolower($s);
+
+        return match ($lower) {
+            'product', 'PRODUCT' => PageType::PRODUCT,
+            'category', 'CATEGORY' => PageType::CATEGORY,
+            'homepage', 'home', 'main', 'MAIN' => PageType::MAIN,
+            'contact', 'CONTACT' => PageType::CONTACT,
+            'sitemap', 'SITEMAP' => PageType::SITEMAP,
+            // Legacy values we no longer keep as distinct types.
+            'article', 'other', 'unknown' => PageType::MAIN,
+            default => PageType::MAIN,
         };
     }
 
@@ -225,7 +259,6 @@ class AnalyzePageWithAiJob implements ShouldQueue
                 'description' => $data['description'] ?? null,
                 'images' => $data['images'] ?? null,
                 'attributes' => $data['attributes'] ?? null,
-                'sku' => $data['sku'] ?? null,
                 'availability' => $data['availability'] ?? null,
             ]
         );

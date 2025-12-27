@@ -2,6 +2,7 @@
 
 use App\Models\Domain;
 use App\Models\Page;
+use App\Enums\PageType;
 use App\Services\LmStudioOpenApi\LmStudioOpenApiService;
 use App\Services\Redis\PageLockService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -18,7 +19,7 @@ beforeEach(function () {
     app()->instance(PageLockService::class, $lock);
 });
 
-test('page:recap --page generates product fields and normalizes predicted search queries', function () {
+test('page:recap --page generates product_summary', function () {
     Storage::fake('s3');
     config(['filesystems.disks.s3.url' => 'https://s3.test']);
 
@@ -44,7 +45,7 @@ test('page:recap --page generates product fields and normalizes predicted search
         'url' => 'https://shop.test/product/1',
         'title' => 'Super Phone',
         'meta_description' => 'Best phone ever',
-        'page_type' => Page::TYPE_PRODUCT,
+        'page_type' => PageType::PRODUCT,
         'is_product' => true,
         'content_with_tags_purified' => $contentUrl,
         'last_crawled_at' => now(),
@@ -58,7 +59,7 @@ test('page:recap --page generates product fields and normalizes predicted search
     $openAi->shouldReceive('chatWithImage')
         ->once()
         ->andReturn([
-            'content' => '{"product_summary":"A great phone.","product_summary_specs":"128GB; OLED.","product_abilities":"Calls, photos.","product_predicted_search_text":"buy super phone, Super Phone price\\nSuper phone 128gb; super phone OLED, super phone review, buy super phone"}',
+            'content' => '{"product_summary":"A great phone."}',
             'model' => 'test-model',
             'usage' => [],
         ]);
@@ -73,10 +74,7 @@ test('page:recap --page generates product fields and normalizes predicted search
 
     $page->refresh();
 
-    expect($page->product_summary)->toBe('A great phone.')
-        ->and($page->product_summary_specs)->toBe('128GB; OLED.')
-        ->and($page->product_abilities)->toBe('Calls, photos.')
-        ->and($page->product_predicted_search_text)->toBe('buy super phone, Super Phone price, Super phone 128gb, super phone OLED, super phone review');
+    expect($page->product_summary)->toBe('A great phone.');
 });
 
 test('page:recap --page skips non-product pages and does not write product fields', function () {
@@ -96,7 +94,7 @@ test('page:recap --page skips non-product pages and does not write product field
         'domain_id' => $domain->id,
         'url' => 'https://example.test/about',
         'title' => 'About',
-        'page_type' => Page::TYPE_OTHER,
+        'page_type' => PageType::MAIN,
         'is_product' => false,
         'content_with_tags_purified' => $contentUrl,
         'last_crawled_at' => now(),
@@ -117,13 +115,10 @@ test('page:recap --page skips non-product pages and does not write product field
     expect($exit)->toBe(0);
 
     $page->refresh();
-    expect($page->product_summary)->toBeNull()
-        ->and($page->product_summary_specs)->toBeNull()
-        ->and($page->product_abilities)->toBeNull()
-        ->and($page->product_predicted_search_text)->toBeNull();
+    expect($page->product_summary)->toBeNull();
 });
 
-test('page:recap fails if predicted search queries are fewer than 5 after normalization', function () {
+test('page:recap fails if product_summary is empty', function () {
     Storage::fake('s3');
     config(['filesystems.disks.s3.url' => 'https://s3.test']);
 
@@ -148,7 +143,7 @@ test('page:recap fails if predicted search queries are fewer than 5 after normal
         'domain_id' => $domain->id,
         'url' => 'https://shop2.test/product/2',
         'title' => 'Gadget',
-        'page_type' => Page::TYPE_PRODUCT,
+        'page_type' => PageType::PRODUCT,
         'is_product' => true,
         'content_with_tags_purified' => $contentUrl,
         'last_crawled_at' => now(),
@@ -162,7 +157,7 @@ test('page:recap fails if predicted search queries are fewer than 5 after normal
     $openAi->shouldReceive('chatWithImage')
         ->once()
         ->andReturn([
-            'content' => '{"product_summary":"Ok.","product_summary_specs":"Specs.","product_abilities":"Abilities.","product_predicted_search_text":"q1, q2, q3, q3"}',
+            'content' => '{"product_summary":""}',
             'model' => 'test-model',
             'usage' => [],
         ]);
@@ -176,10 +171,7 @@ test('page:recap fails if predicted search queries are fewer than 5 after normal
     expect($exit)->toBe(1);
 
     $page->refresh();
-    expect($page->product_summary)->toBeNull()
-        ->and($page->product_summary_specs)->toBeNull()
-        ->and($page->product_abilities)->toBeNull()
-        ->and($page->product_predicted_search_text)->toBeNull();
+    expect($page->product_summary)->toBeNull();
 });
 
 

@@ -19,8 +19,9 @@ use RuntimeException;
 /**
  * Extract product attributes from page screenshot (vision) into:
  * - pages.json_attributes (follows type_structures.structure)
- * - pages.sku / pages.product_code / pages.product_model_number
+ * - pages.product_original_article / pages.product_model_number
  * - pages.attributes_extracted_at
+ * - pages.product_metadata_extracted_at
  */
 final class ExtractPageAttributesCommand extends Command
 {
@@ -33,7 +34,7 @@ final class ExtractPageAttributesCommand extends Command
                             {--max-attempts= : (Deprecated) Max retry attempts per page}
                             {--sleep-ms=0 : Sleep between retries in ms}';
 
-    protected $description = 'Extract product attributes + SKU/product_code/model_number from screenshot using OpenAI-compatible vision model (LM Studio OpenAPI)';
+    protected $description = 'Extract product attributes + original article/model number from screenshot using OpenAI-compatible vision model (LM Studio OpenAPI)';
 
     private const  STAGE = 'attributes';
 
@@ -224,7 +225,8 @@ final class ExtractPageAttributesCommand extends Command
                 return false;
             }
 
-            $requiredKeys = ['sku', 'product_code', 'product_model_number', 'attributes'];
+            // Required keys. product_original_article is preferred, but we also accept legacy product_code.
+            $requiredKeys = ['product_model_number', 'attributes'];
 
             $attempt = 0;
             while (true) {
@@ -322,6 +324,17 @@ final class ExtractPageAttributesCommand extends Command
                     }
                 }
 
+                if (!array_key_exists('product_original_article', $parsed) && !array_key_exists('product_code', $parsed)) {
+                    $this->warn("   ⚠️  Missing key 'product_original_article' (or legacy 'product_code'), retrying...");
+                    Log::warning('🧩 [ExtractAttributes] Missing product_original_article/product_code key, retrying', [
+                        'page_id' => $page->id,
+                        'attempt' => $attempt,
+                        'available_keys' => array_keys($parsed),
+                    ]);
+                    $this->sleepIfNeeded($sleepMs);
+                    continue;
+                }
+
                 if (!is_array($parsed['attributes'])) {
                     $this->warn("   ⚠️  'attributes' must be an object/array, retrying...");
                     Log::warning('🧩 [ExtractAttributes] Invalid attributes type, retrying', [
@@ -333,16 +346,17 @@ final class ExtractPageAttributesCommand extends Command
                     continue;
                 }
 
-                $sku = $this->normalizeNullableString($parsed['sku'] ?? null, 128);
-                $productCode = $this->normalizeNullableString($parsed['product_code'] ?? null, 128);
+                // Backward-compatible: accept legacy "product_code" key if prompt/model returns it.
+                $productOriginalArticleRaw = $parsed['product_original_article'] ?? ($parsed['product_code'] ?? null);
+                $productOriginalArticle = $this->normalizeNullableString($productOriginalArticleRaw, 128);
                 $modelNumber = $this->normalizeNullableString($parsed['product_model_number'] ?? null, 128);
 
                 $page->update([
                     'json_attributes' => $parsed['attributes'],
-                    'sku' => $sku,
-                    'product_code' => $productCode,
+                    'product_original_article' => $productOriginalArticle,
                     'product_model_number' => $modelNumber,
                     'attributes_extracted_at' => now(),
+                    'product_metadata_extracted_at' => now(),
                 ]);
 
                 $this->info('   ✅ Attributes saved');
@@ -352,8 +366,7 @@ final class ExtractPageAttributesCommand extends Command
                     'page_id' => $page->id,
                     'attempts' => $attempt,
                     'took_seconds' => round(microtime(true) - $startedAt, 3),
-                    'has_sku' => $sku !== null,
-                    'has_product_code' => $productCode !== null,
+                    'has_product_original_article' => $productOriginalArticle !== null,
                     'has_product_model_number' => $modelNumber !== null,
                 ]);
 

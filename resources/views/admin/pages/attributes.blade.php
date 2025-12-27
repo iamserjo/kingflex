@@ -242,9 +242,6 @@
                             <th>URL</th>
                             <th>Product type</th>
                             <th>Attributes</th>
-                            <th>Summary specs</th>
-                            <th>Abilities</th>
-                            <th>Predicted search</th>
                             <th>Screenshot (crop=2300)</th>
                         </tr>
                         </thead>
@@ -268,15 +265,6 @@
                                 </td>
                                 <td>
                                     <pre>{{ $page->json_attributes ? json_encode($page->json_attributes, JSON_PRETTY_PRINT|JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES) : 'null' }}</pre>
-                                </td>
-                                <td>
-                                    <pre class="pre-compact">{{ $page->product_summary_specs ?? 'null' }}</pre>
-                                </td>
-                                <td>
-                                    <pre class="pre-compact">{{ $page->product_abilities ?? 'null' }}</pre>
-                                </td>
-                                <td>
-                                    <pre class="pre-compact">{{ $page->product_predicted_search_text ?? 'null' }}</pre>
                                 </td>
                                 <td>
                                     @if ($page->screenshot_path)
@@ -311,9 +299,6 @@
                             <th>URL</th>
                             <th>Product type</th>
                             <th>Attributes</th>
-                            <th>Summary specs</th>
-                            <th>Abilities</th>
-                            <th>Predicted search</th>
                             <th>Screenshot (crop=2300)</th>
                         </tr>
                         </thead>
@@ -337,15 +322,6 @@
                                 </td>
                                 <td>
                                     <pre>{{ json_encode($page->json_attributes, JSON_PRETTY_PRINT|JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES) }}</pre>
-                                </td>
-                                <td>
-                                    <pre class="pre-compact">{{ $page->product_summary_specs ?? 'null' }}</pre>
-                                </td>
-                                <td>
-                                    <pre class="pre-compact">{{ $page->product_abilities ?? 'null' }}</pre>
-                                </td>
-                                <td>
-                                    <pre class="pre-compact">{{ $page->product_predicted_search_text ?? 'null' }}</pre>
                                 </td>
                                 <td>
                                     @if ($page->screenshot_path)

@@ -4,12 +4,14 @@ declare(strict_types=1);
 
 namespace App\Models;
 
+use App\Enums\PageType;
 use Carbon\Carbon;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 
 /**
  * Page model for storing crawled pages.
@@ -21,17 +23,13 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
  * @property string|null $title
  * @property string|null $meta_description
  * @property string|null $product_summary
- * @property string|null $product_summary_specs
- * @property string|null $product_abilities
- * @property string|null $product_predicted_search_text
  * @property string|null $recap_content
  * @property array|null $keywords
- * @property string|null $page_type
+ * @property PageType|null $page_type
  * @property array|null $metadata
  * @property int $depth
  * @property int $inbound_links_count
  * @property Carbon|null $last_crawled_at
- * @property Carbon|null $recap_generated_at
  * @property Carbon|null $embedding_generated_at
  * @property string|null $raw_html
  * @property string|null $content_with_tags_purified Rendered content with semantic HTML tags
@@ -39,14 +37,14 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
  * @property Carbon|null $screenshot_taken_at Timestamp when screenshot_path was captured
  * @property bool|null $is_product
  * @property bool|null $is_product_available
- * @property bool|null $is_used Product condition: true = used/refurbished, false = new, null = unknown
+ * @property bool|null $is_product_used Product condition: true = used/refurbished, false = new, null = unknown
  * @property int|null $product_type_id
  * @property Carbon|null $product_type_detected_at
  * @property array|null $json_attributes
- * @property string|null $product_code
- * @property string|null $sku
+ * @property string|null $product_original_article
  * @property string|null $product_model_number
  * @property Carbon|null $attributes_extracted_at
+ * @property Carbon|null $product_metadata_extracted_at
  * @property array|null $embedding
  * @property Carbon $created_at
  * @property Carbon $updated_at
@@ -64,13 +62,6 @@ class Page extends Model
 {
     use HasFactory;
 
-    public const TYPE_PRODUCT = 'product';
-    public const TYPE_CATEGORY = 'category';
-    public const TYPE_ARTICLE = 'article';
-    public const TYPE_HOMEPAGE = 'homepage';
-    public const TYPE_CONTACT = 'contact';
-    public const TYPE_OTHER = 'other';
-
     /**
      * The attributes that are mass assignable.
      *
@@ -83,9 +74,6 @@ class Page extends Model
         'title',
         'meta_description',
         'product_summary',
-        'product_summary_specs',
-        'product_abilities',
-        'product_predicted_search_text',
         'recap_content',
         'keywords',
         'page_type',
@@ -93,7 +81,6 @@ class Page extends Model
         'depth',
         'inbound_links_count',
         'last_crawled_at',
-        'recap_generated_at',
         'embedding_generated_at',
         'raw_html',
         'content_with_tags_purified',
@@ -101,14 +88,14 @@ class Page extends Model
         'screenshot_taken_at',
         'is_product',
         'is_product_available',
-        'is_used',
+        'is_product_used',
         'product_type_id',
         'product_type_detected_at',
         'json_attributes',
-        'product_code',
-        'sku',
+        'product_original_article',
         'product_model_number',
         'attributes_extracted_at',
+        'product_metadata_extracted_at',
         'embedding',
     ];
 
@@ -126,15 +113,16 @@ class Page extends Model
             'inbound_links_count' => 'integer',
             'last_crawled_at' => 'datetime',
             'screenshot_taken_at' => 'datetime',
-            'recap_generated_at' => 'datetime',
             'embedding_generated_at' => 'datetime',
+            'page_type' => PageType::class,
             'is_product' => 'boolean',
             'is_product_available' => 'boolean',
-            'is_used' => 'boolean',
+            'is_product_used' => 'boolean',
             'product_type_id' => 'integer',
             'product_type_detected_at' => 'datetime',
             'json_attributes' => 'array',
             'attributes_extracted_at' => 'datetime',
+            'product_metadata_extracted_at' => 'datetime',
             'embedding' => 'array',
         ];
     }
