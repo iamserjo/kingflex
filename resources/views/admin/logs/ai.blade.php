@@ -136,12 +136,11 @@
             background: rgba(129, 140, 248, 0.20);
         }
 
-        .table-wrap { overflow-x: auto; }
+        .table-wrap { }
 
         table {
             width: 100%;
             border-collapse: collapse;
-            min-width: 1300px;
         }
 
         th, td {
@@ -200,10 +199,15 @@
             border: 1px solid var(--border-color);
             border-radius: 0.75rem;
             max-height: 380px;
+            width: 700px;
             overflow: auto;
             font-size: 0.82rem;
             line-height: 1.45;
             color: var(--text-primary);
+        }
+
+        .think-block {
+            color: var(--text-secondary);
         }
 
         .pagination {
@@ -322,13 +326,23 @@
                                 <td class="mono">{{ $log->duration_ms !== null ? ($log->duration_ms . 'ms') : '—' }}</td>
                                 <td class="mono">{{ $route }}</td>
                                 <td>
-                                    <pre>{{ $log->request_payload ? json_encode($log->request_payload, JSON_PRETTY_PRINT|JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES) : 'null' }}</pre>
+                                    <pre>{{ $log->request_payload ? str_replace("\\n", "\n", json_encode($log->request_payload, JSON_PRETTY_PRINT|JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES)) : 'null' }}</pre>
                                 </td>
                                 <td>
                                     @if ($log->response_payload)
-                                        <pre>{{ json_encode($log->response_payload, JSON_PRETTY_PRINT|JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES) }}</pre>
+                                        @php
+                                            $responseText = str_replace("\\n", "\n", json_encode($log->response_payload, JSON_PRETTY_PRINT|JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES));
+                                            $responseText = e($responseText);
+                                            $responseText = preg_replace('/&lt;think&gt;(.*?)&lt;\/think&gt;/s', '<span class="think-block">&lt;think&gt;$1&lt;/think&gt;</span>', $responseText);
+                                        @endphp
+                                        <pre>{!! $responseText !!}</pre>
                                     @elseif ($log->response_body)
-                                        <pre>{{ $log->response_body }}</pre>
+                                        @php
+                                            $responseText = str_replace("\\n", "\n", $log->response_body);
+                                            $responseText = e($responseText);
+                                            $responseText = preg_replace('/&lt;think&gt;(.*?)&lt;\/think&gt;/s', '<span class="think-block">&lt;think&gt;$1&lt;/think&gt;</span>', $responseText);
+                                        @endphp
+                                        <pre>{!! $responseText !!}</pre>
                                     @else
                                         <pre>null</pre>
                                     @endif

@@ -9,41 +9,43 @@ use App\Models\TypeStructure;
 use App\Services\Json\JsonParserService;
 use App\Services\LmStudioOpenApi\LmStudioOpenApiService;
 use App\Services\Pages\PageAttributesCandidateService;
-use App\Services\Pages\PageScreenshotDataUrlService;
 use App\Services\Redis\PageLockService;
+use App\Services\Storage\PageAssetsStorageService;
 use Illuminate\Console\Command;
-use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\Log;
 use RuntimeException;
 
 /**
- * Extract product attributes from page screenshot (vision) into:
+ * Extract product attributes from purified HTML text (no vision/screenshot) into:
  * - pages.json_attributes (follows type_structures.structure)
  * - pages.sku / pages.product_code / pages.product_model_number
  * - pages.attributes_extracted_at
+ *
+ * This command is text-only alternative to page:extract-attributes (which uses vision model).
  */
-final class ExtractPageAttributesCommand extends Command
+final class ExtractPageAttributesWithTextV1Command extends Command
 {
-    protected $signature = 'page:extract-attributes
+    protected $signature = 'page:extract-attributes-with-text-v1
                             {--limit=1 : Number of pages to process}
                             {--domain= : Only process pages from specific domain}
                             {--page= : Process specific page by ID}
                             {--force : Re-extract even if already extracted}
                             {--attempts=5 : Max retry attempts per page}
-                            {--max-attempts= : (Deprecated) Max retry attempts per page}
                             {--sleep-ms=0 : Sleep between retries in ms}';
 
-    protected $description = 'Extract product attributes + SKU/product_code/model_number from screenshot using OpenAI-compatible vision model (LM Studio OpenAPI)';
+    protected $description = 'Extract product attributes + SKU/product_code/model_number from purified HTML text using LM Studio OpenAPI (text-only, no vision)';
 
-    private const  STAGE = 'attributes';
+    private const string STAGE = 'attributes_text_v1';
 
-    private const  MAX_USER_CONTENT_CHARS = 4000;
+    private const int MAX_PURIFIED_HTML_CHARS = 32000;
+
+    private const int MAX_USER_CONTENT_CHARS = 4000;
 
     public function __construct(
         private readonly LmStudioOpenApiService $openAi,
         private readonly PageLockService $lockService,
         private readonly PageAttributesCandidateService $candidates,
-        private readonly PageScreenshotDataUrlService $screenshotDataUrl,
+        private readonly PageAssetsStorageService $assetsStorage,
     ) {
         parent::__construct();
     }
@@ -55,17 +57,13 @@ final class ExtractPageAttributesCommand extends Command
         $pageId = $this->option('page');
         $force = (bool) $this->option('force');
         $maxAttempts = max(1, (int) $this->option('attempts'));
-        $maxAttemptsDeprecated = $this->option('max-attempts');
-        if ($maxAttemptsDeprecated !== null && $maxAttemptsDeprecated !== '') {
-            $maxAttempts = max(1, (int) $maxAttemptsDeprecated);
-        }
         $sleepMs = max(0, (int) $this->option('sleep-ms'));
 
         $this->logSeparator();
-        $this->info('🧩 EXTRACT PAGE ATTRIBUTES (Screenshot + type_structures.structure)');
+        $this->info('🧩 EXTRACT PAGE ATTRIBUTES (Text-only, from purified HTML)');
         $this->info("⏰ Started at: " . now()->format('Y-m-d H:i:s'));
         $this->info("📡 API: {$this->openAi->getBaseUrl()}");
-        $this->info("🧠 Vision model: {$this->openAi->getVisionModel()}");
+        $this->info("🧠 Model: {$this->openAi->getModel()}");
         $this->logSeparator();
 
         if (!$this->openAi->isConfigured()) {
@@ -94,7 +92,7 @@ final class ExtractPageAttributesCommand extends Command
             }
         } catch (RuntimeException $e) {
             $this->error('❌ ' . $e->getMessage());
-            Log::error('🧩 [ExtractAttributes] Fatal error, stopping command', [
+            Log::error('🧩 [ExtractAttributesTextV1] Fatal error, stopping command', [
                 'error' => $e->getMessage(),
             ]);
             return self::FAILURE;
@@ -137,14 +135,14 @@ final class ExtractPageAttributesCommand extends Command
             }
         } catch (RuntimeException $e) {
             $this->error('❌ ' . $e->getMessage());
-            Log::error('🧩 [ExtractAttributes] Fatal error, stopping command', [
+            Log::error('🧩 [ExtractAttributesTextV1] Fatal error, stopping command', [
                 'error' => $e->getMessage(),
             ]);
             return self::FAILURE;
         }
 
         $this->logSeparator();
-        $this->info('✅ EXTRACT PAGE ATTRIBUTES COMPLETED');
+        $this->info('✅ EXTRACT PAGE ATTRIBUTES (Text V1) COMPLETED');
         $this->info("   Processed: {$processed}");
         $this->info("   Skipped (locked): {$skipped}");
         if ($errors > 0) {
@@ -168,7 +166,7 @@ final class ExtractPageAttributesCommand extends Command
     {
         $startedAt = microtime(true);
 
-        $this->info("🔄 Extracting attributes: {$page->url}");
+        $this->info("🔄 Extracting attributes (text): {$page->url}");
         $this->info("   Page ID: {$page->id}");
 
         if (!$force && $page->attributes_extracted_at !== null) {
@@ -176,13 +174,13 @@ final class ExtractPageAttributesCommand extends Command
             return true;
         }
 
-        if (empty($page->screenshot_path)) {
-            $this->warn('   ⚠️  screenshot_path is empty; skipping');
+        if (empty($page->content_with_tags_purified)) {
+            $this->warn('   ⚠️  content_with_tags_purified is empty; skipping');
             return false;
         }
 
         if ($page->product_type_id === null) {
-            // As requested: do not mark as extracted; leave for later when product type is detected.
+            // Do not mark as extracted; leave for later when product type is detected.
             $this->warn('   ⚠️  product_type_id is null; skipping (will retry later)');
             return false;
         }
@@ -199,32 +197,33 @@ final class ExtractPageAttributesCommand extends Command
             return false;
         }
 
-        Log::info('🧩 [ExtractAttributes] Starting', [
+        Log::info('🧩 [ExtractAttributesTextV1] Starting', [
             'page_id' => $page->id,
             'url' => $page->url,
             'product_type_id' => $page->product_type_id,
-            'screenshot_path' => $page->screenshot_path,
         ]);
 
         try {
-            $systemPrompt = (string) view('ai-prompts.extract-page-attributes', [
-                'structure' => $structure,
-            ])->render();
+            // Fetch purified HTML from S3
+            $s3StartTime = microtime(true);
+            $purifiedHtml = $this->fetchPurifiedHtml($page);
+            $s3Time = microtime(true) - $s3StartTime;
 
-            $userText = $this->buildUserTextForVision($page);
-            $this->info('   📝 Context length (text only): ' . strlen($userText) . ' chars');
-
-            $imageDataUrl = $this->screenshotDataUrl->forPage($page, 0);
-            if ($imageDataUrl === null) {
-                $this->warn('   ⚠️  Screenshot file does not exist or unsupported; skipping');
-                Log::warning('🧩 [ExtractAttributes] Screenshot missing/unsupported on disk', [
-                    'page_id' => $page->id,
-                    'screenshot_path' => $page->screenshot_path,
-                ]);
+            if ($purifiedHtml === null) {
+                $this->warn('   ⚠️  Failed to fetch purified HTML from S3; skipping');
                 return false;
             }
 
-            $requiredKeys = ['sku', 'product_code', 'product_model_number', 'attributes'];
+            $this->info('   📦 S3 fetch: ' . strlen($purifiedHtml) . ' chars in ' . $this->formatSeconds($s3Time));
+
+            $systemPrompt = (string) view('ai-prompts.extract-page-attributes-text-v1', [
+                'structure' => $structure,
+            ])->render();
+
+            $userText = $this->buildUserTextContent($page, $purifiedHtml);
+            $this->info('   📝 User content length: ' . strlen($userText) . ' chars');
+
+            $requiredKeys = ['sku', 'product_code', 'product_model_number', 'used', 'attributes'];
 
             $attempt = 0;
             while (true) {
@@ -232,7 +231,7 @@ final class ExtractPageAttributesCommand extends Command
 
                 if ($attempt > $maxAttempts) {
                     $this->error("   ❌ Exceeded max attempts ({$maxAttempts})");
-                    Log::error('🧩 [ExtractAttributes] Exceeded max attempts', [
+                    Log::error('🧩 [ExtractAttributesTextV1] Exceeded max attempts', [
                         'page_id' => $page->id,
                         'attempts' => $attempt - 1,
                     ]);
@@ -241,16 +240,8 @@ final class ExtractPageAttributesCommand extends Command
 
                 $this->line("   🤖 Attempt #{$attempt}...");
 
-                $options = [
-                    'response_format' => ['type' => 'text'],
-                ];
-
-                $response = $this->openAi->chatWithImage(
-                    systemPrompt: $systemPrompt,
-                    userText: $userText,
-                    imageDataUrl: $imageDataUrl,
-                    options: $options,
-                );
+                // Use text-only chat method (no vision)
+                $response = $this->openAi->chatJson($systemPrompt, $userText, ['model' => 'google/gemma-3-4b']);
 
                 if ($response === null) {
                     throw new RuntimeException('LM Studio is unavailable: API returned null response');
@@ -260,21 +251,15 @@ final class ExtractPageAttributesCommand extends Command
                     $error = $response['error'];
                     $status = $error['status'] ?? null;
                     $message = $error['message'] ?? 'unknown';
-                    $url = $error['url'] ?? 'unknown';
-                    $body = (string) ($error['body'] ?? '');
 
-                    // Fail-fast when LM Studio is unreachable (timeouts, connection refused, DNS, etc.).
+                    // Fail-fast when LM Studio is unreachable
                     if ($status === null || $status === 0) {
                         throw new RuntimeException("LM Studio is unavailable: {$message}");
                     }
 
                     $this->warn("   ⚠️  API Error" . ($status !== null ? " (HTTP {$status})" : '') . ": {$message}");
-                    $this->warn("   🔗 URL: {$url}");
-                    if ($body !== '') {
-                        $this->warn("   📄 Response: " . substr($body, 0, 400));
-                    }
 
-                    Log::warning('🧩 [ExtractAttributes] API error, retrying', [
+                    Log::warning('🧩 [ExtractAttributesTextV1] API error, retrying', [
                         'page_id' => $page->id,
                         'attempt' => $attempt,
                         'error' => $error,
@@ -283,35 +268,13 @@ final class ExtractPageAttributesCommand extends Command
                     continue;
                 }
 
-                $content = (string) ($response['content'] ?? '');
-                if ($content === '') {
-                    $this->warn('   ⚠️  Empty assistant content, retrying...');
-                    Log::warning('🧩 [ExtractAttributes] Empty assistant content, retrying', [
-                        'page_id' => $page->id,
-                        'attempt' => $attempt,
-                    ]);
-                    $this->sleepIfNeeded($sleepMs);
-                    continue;
-                }
-
-                /** @var JsonParserService $jsonParser */
-                $jsonParser = app(JsonParserService::class);
-                $parsed = $jsonParser->parse($content);
-                if ($parsed === null) {
-                    $this->warn('   ⚠️  Invalid JSON content, retrying...');
-                    Log::warning('🧩 [ExtractAttributes] Invalid JSON content, retrying', [
-                        'page_id' => $page->id,
-                        'attempt' => $attempt,
-                        'response_preview' => substr($content, 0, 400),
-                    ]);
-                    $this->sleepIfNeeded($sleepMs);
-                    continue;
-                }
+                // chatJson already parses JSON and returns array or null
+                $parsed = $response;
 
                 foreach ($requiredKeys as $key) {
                     if (!array_key_exists($key, $parsed)) {
                         $this->warn("   ⚠️  Missing key '{$key}', retrying...");
-                        Log::warning('🧩 [ExtractAttributes] Missing required key, retrying', [
+                        Log::warning('🧩 [ExtractAttributesTextV1] Missing required key, retrying', [
                             'page_id' => $page->id,
                             'attempt' => $attempt,
                             'missing_key' => $key,
@@ -324,7 +287,7 @@ final class ExtractPageAttributesCommand extends Command
 
                 if (!is_array($parsed['attributes'])) {
                     $this->warn("   ⚠️  'attributes' must be an object/array, retrying...");
-                    Log::warning('🧩 [ExtractAttributes] Invalid attributes type, retrying', [
+                    Log::warning('🧩 [ExtractAttributesTextV1] Invalid attributes type, retrying', [
                         'page_id' => $page->id,
                         'attempt' => $attempt,
                         'attributes_type' => gettype($parsed['attributes']),
@@ -336,25 +299,28 @@ final class ExtractPageAttributesCommand extends Command
                 $sku = $this->normalizeNullableString($parsed['sku'] ?? null, 128);
                 $productCode = $this->normalizeNullableString($parsed['product_code'] ?? null, 128);
                 $modelNumber = $this->normalizeNullableString($parsed['product_model_number'] ?? null, 128);
+                $isUsed = $this->normalizeNullableBool($parsed['used'] ?? null);
 
                 $page->update([
                     'json_attributes' => $parsed['attributes'],
                     'sku' => $sku,
                     'product_code' => $productCode,
                     'product_model_number' => $modelNumber,
+                    'is_used' => $isUsed,
                     'attributes_extracted_at' => now(),
                 ]);
 
                 $this->info('   ✅ Attributes saved');
                 $this->line('   ⏱️  Took: ' . $this->formatSeconds(microtime(true) - $startedAt));
 
-                Log::info('🧩 [ExtractAttributes] ✅ Completed', [
+                Log::info('🧩 [ExtractAttributesTextV1] ✅ Completed', [
                     'page_id' => $page->id,
                     'attempts' => $attempt,
                     'took_seconds' => round(microtime(true) - $startedAt, 3),
                     'has_sku' => $sku !== null,
                     'has_product_code' => $productCode !== null,
                     'has_product_model_number' => $modelNumber !== null,
+                    'is_used' => $isUsed,
                 ]);
 
                 return true;
@@ -365,7 +331,7 @@ final class ExtractPageAttributesCommand extends Command
             }
             $this->error('   ❌ Exception: ' . $e->getMessage());
             $this->line('   ⏱️  Took: ' . $this->formatSeconds(microtime(true) - $startedAt));
-            Log::error('🧩 [ExtractAttributes] Exception', [
+            Log::error('🧩 [ExtractAttributesTextV1] Exception', [
                 'page_id' => $page->id,
                 'error' => $e->getMessage(),
                 'trace' => $e->getTraceAsString(),
@@ -375,7 +341,41 @@ final class ExtractPageAttributesCommand extends Command
         }
     }
 
-    private function buildUserTextForVision(Page $page): string
+    /**
+     * Fetch purified HTML content from S3.
+     */
+    private function fetchPurifiedHtml(Page $page): ?string
+    {
+        $url = $page->content_with_tags_purified;
+        if (empty($url)) {
+            return null;
+        }
+
+        try {
+            $content = $this->assetsStorage->getTextFromUrl($url);
+            if ($content === '') {
+                Log::warning('🧩 [ExtractAttributesTextV1] Purified HTML is empty', [
+                    'page_id' => $page->id,
+                    'url' => $url,
+                ]);
+                return null;
+            }
+            return $content;
+        } catch (\Throwable $e) {
+            Log::error('🧩 [ExtractAttributesTextV1] Failed to fetch purified HTML from S3', [
+                'page_id' => $page->id,
+                'url' => $url,
+                'error' => $e->getMessage(),
+            ]);
+            return null;
+        }
+    }
+
+    /**
+     * Build user content for text-only chat.
+     * Includes page metadata + purified HTML content.
+     */
+    private function buildUserTextContent(Page $page, string $purifiedHtml): string
     {
         $parts = [];
         $parts[] = 'URL: ' . (string) $page->url;
@@ -386,16 +386,21 @@ final class ExtractPageAttributesCommand extends Command
             $parts[] = 'Meta description: ' . (string) $page->meta_description;
         }
 
-        $content = implode("\n", $parts);
+        $metaPart = implode("\n", $parts);
 
-        if (strlen($content) > self::MAX_USER_CONTENT_CHARS) {
-            $content = substr($content, 0, self::MAX_USER_CONTENT_CHARS) . "\n... [truncated]";
+        // Truncate metadata if too long
+        if (strlen($metaPart) > self::MAX_USER_CONTENT_CHARS) {
+            $metaPart = substr($metaPart, 0, self::MAX_USER_CONTENT_CHARS) . "\n... [metadata truncated]";
         }
 
-        return $content;
-    }
+        // Truncate purified HTML if too long
+        $htmlPart = $purifiedHtml;
+        if (strlen($htmlPart) > self::MAX_PURIFIED_HTML_CHARS) {
+            $htmlPart = substr($htmlPart, 0, self::MAX_PURIFIED_HTML_CHARS) . "\n... [content truncated]";
+        }
 
-    // Screenshot data URL is now provided by App\Services\Pages\PageScreenshotDataUrlService (S3-only).
+        return $metaPart . "\n\n--- Page Content (purified HTML) ---\n\n" . $htmlPart;
+    }
 
     private function normalizeNullableString(mixed $value, int $maxLen): ?string
     {
@@ -419,6 +424,33 @@ final class ExtractPageAttributesCommand extends Command
         return $s;
     }
 
+    private function normalizeNullableBool(mixed $value): ?bool
+    {
+        if ($value === null) {
+            return null;
+        }
+
+        if (is_bool($value)) {
+            return $value;
+        }
+
+        if (is_string($value)) {
+            $lower = strtolower(trim($value));
+            if (in_array($lower, ['true', '1', 'yes'], true)) {
+                return true;
+            }
+            if (in_array($lower, ['false', '0', 'no'], true)) {
+                return false;
+            }
+        }
+
+        if (is_int($value)) {
+            return $value !== 0;
+        }
+
+        return null;
+    }
+
     private function sleepIfNeeded(int $sleepMs): void
     {
         if ($sleepMs <= 0) {
@@ -438,8 +470,4 @@ final class ExtractPageAttributesCommand extends Command
         $this->line(str_repeat($char, 60));
     }
 }
-
-
-
-
 

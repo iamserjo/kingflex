@@ -1,6 +1,6 @@
 <?php
 
-use App\Http\Controllers\ChatBootController;
+use App\Http\Controllers\ConsultantChatController;
 use App\Http\Controllers\QdrantSearchController;
 use App\Http\Controllers\Admin\PageAttributesController;
 use App\Http\Controllers\Admin\PageProductTypeController;
@@ -32,5 +32,12 @@ Route::prefix('admin')->group(function () {
 
     Route::get('/logs/ai', [AiLogsController::class, 'index'])
         ->name('admin.logs.ai');
+});
+
+Route::prefix('v1/chatboot')->group(function () {
+    Route::get('/', [ConsultantChatController::class, 'index'])->name('consultant.index');
+    Route::post('/message', [ConsultantChatController::class, 'message'])
+        ->withoutMiddleware([\Illuminate\Foundation\Http\Middleware\VerifyCsrfToken::class])
+        ->name('consultant.message');
 });
 

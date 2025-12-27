@@ -40,6 +40,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
  * @property Carbon|null $screenshot_taken_at Timestamp when screenshot_path was captured
  * @property bool|null $is_product
  * @property bool|null $is_product_available
+ * @property bool|null $is_used Product condition: true = used/refurbished, false = new, null = unknown
  * @property int|null $product_type_id
  * @property Carbon|null $product_type_detected_at
  * @property array|null $json_attributes
@@ -104,6 +105,7 @@ class Page extends Model
         'screenshot_taken_at',
         'is_product',
         'is_product_available',
+        'is_used',
         'product_type_id',
         'product_type_detected_at',
         'json_attributes',
@@ -134,6 +136,7 @@ class Page extends Model
             'processing_started_at' => 'datetime',
             'is_product' => 'boolean',
             'is_product_available' => 'boolean',
+            'is_used' => 'boolean',
             'product_type_id' => 'integer',
             'product_type_detected_at' => 'datetime',
             'json_attributes' => 'array',
