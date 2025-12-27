@@ -11,7 +11,6 @@ export default defineConfig({
                 'resources/js/search.js',
                 'resources/js/chatboot.js',
                 'resources/js/consultant.js',
-                'resources/js/qdrant.js',
             ],
             refresh: true,
         }),

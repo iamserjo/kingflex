@@ -48,7 +48,6 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
  * @property string|null $sku
  * @property string|null $product_model_number
  * @property Carbon|null $attributes_extracted_at
- * @property Carbon|null $qdstored_at
  * @property array|null $embedding
  * @property Carbon $created_at
  * @property Carbon $updated_at
@@ -97,7 +96,6 @@ class Page extends Model
         'last_crawled_at',
         'recap_generated_at',
         'embedding_generated_at',
-        'qdstored_at',
         'processing_started_at',
         'raw_html',
         'content_with_tags_purified',
@@ -132,7 +130,6 @@ class Page extends Model
             'screenshot_taken_at' => 'datetime',
             'recap_generated_at' => 'datetime',
             'embedding_generated_at' => 'datetime',
-            'qdstored_at' => 'datetime',
             'processing_started_at' => 'datetime',
             'is_product' => 'boolean',
             'is_product_available' => 'boolean',

@@ -1,24 +1,15 @@
 <?php
 
 use App\Http\Controllers\ConsultantChatController;
-use App\Http\Controllers\QdrantSearchController;
 use App\Http\Controllers\Admin\PageAttributesController;
 use App\Http\Controllers\Admin\PageProductTypeController;
 use App\Http\Controllers\SearchController;
 use App\Http\Controllers\Admin\PageScreenshotController;
 use App\Http\Controllers\Admin\AiLogsController;
-use App\Http\Middleware\NoStoreWhenDebug;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/', [SearchController::class, 'home'])->name('home');
 Route::post('/search', [SearchController::class, 'search'])->name('search');
-
-Route::middleware([NoStoreWhenDebug::class])->group(function () {
-    Route::get('/qdrant', [QdrantSearchController::class, 'index'])->name('qdrant.index');
-    Route::get('/qdrant/stats', [QdrantSearchController::class, 'stats'])->name('qdrant.stats');
-    Route::post('/qdrant/plan', [QdrantSearchController::class, 'plan'])->name('qdrant.plan');
-    Route::post('/qdrant/search', [QdrantSearchController::class, 'search'])->name('qdrant.search');
-});
 
 Route::prefix('admin')->group(function () {
     Route::get('/pages/attributes', [PageAttributesController::class, 'index'])
