@@ -33,7 +33,6 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
  * @property Carbon|null $last_crawled_at
  * @property Carbon|null $recap_generated_at
  * @property Carbon|null $embedding_generated_at
- * @property Carbon|null $processing_started_at Processing lock timestamp
  * @property string|null $raw_html
  * @property string|null $content_with_tags_purified Rendered content with semantic HTML tags
  * @property string|null $screenshot_path Local storage path (storage/app/...) to latest full-page screenshot
@@ -96,7 +95,6 @@ class Page extends Model
         'last_crawled_at',
         'recap_generated_at',
         'embedding_generated_at',
-        'processing_started_at',
         'raw_html',
         'content_with_tags_purified',
         'screenshot_path',
@@ -130,7 +128,6 @@ class Page extends Model
             'screenshot_taken_at' => 'datetime',
             'recap_generated_at' => 'datetime',
             'embedding_generated_at' => 'datetime',
-            'processing_started_at' => 'datetime',
             'is_product' => 'boolean',
             'is_product_available' => 'boolean',
             'is_used' => 'boolean',

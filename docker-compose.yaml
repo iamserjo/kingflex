@@ -32,7 +32,6 @@ services:
         depends_on:
             - pgsql
             - redis
-            - qdrant
 
     # PostgreSQL 18 с расширением pgvector для векторных представлений и эмбэдингов
     pgsql:
@@ -80,23 +79,10 @@ services:
             timeout: 5s
         restart: unless-stopped
 
-    # Qdrant для хранения векторных данных (vector DB)
-    qdrant:
-        image: 'qdrant/qdrant:latest'
-        ports:
-            - '${FORWARD_QDRANT_PORT:-6333}:6333'
-        volumes:
-            - 'sail-qdrant:/qdrant/storage'
-        networks:
-            - sail
-        restart: unless-stopped
-
 networks:
     sail:
         driver: bridge
 
 volumes:
     sail-redis:
-        driver: local
-    sail-qdrant:
         driver: local
